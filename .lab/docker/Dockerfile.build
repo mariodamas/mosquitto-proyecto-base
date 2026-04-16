@@ -1,0 +1,103 @@
+# Dockerfile.build
+# ----------------
+# Purpose: produce a reproducible Mosquitto ELF artifact for binary analysis.
+# This is NOT the main tool-execution environment. It emits one binary:
+#   /output/mosquitto
+#
+# The resulting image and its output binary are consumed by the pipeline's
+# binary analysis phase (checksec, hardening, string/symbol inventory).
+#
+# Build the image and extract the artifact with .lab/docker/build_artifact.sh.
+
+FROM ubuntu:22.04
+
+LABEL org.label-schema.name="mosquitto-lab-build"
+LABEL org.label-schema.description="Reproducible Mosquitto v2.0.18 ELF for binary analysis"
+LABEL org.label-schema.version="2.0.18"
+LABEL org.label-schema.schema-version="1.0"
+
+# Pin the package manager to a specific snapshot would be ideal, but
+# Ubuntu 22.04 LTS "jammy" already gives us a stable, pinned GCC/glibc
+# pair (GCC 11.x, glibc 2.35) which is sufficient for reproducibility
+# within the lab lifetime. The explicit APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE
+# suppresses interactive prompts so the image builds cleanly in CI.
+ENV DEBIAN_FRONTEND=noninteractive \
+    APT_KEY_DONT_WARN_ON_DANGEROUS_USAGE=1
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        libssl-dev \
+        wget \
+        ca-certificates \
+        xsltproc \
+        docbook-xsl \
+        libcjson-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Build OpenSSL 1.1.1u from source for reproducibility.
+# Using the distro OpenSSL would tie the artifact to a dynamic link target
+# that may differ between analysis hosts. A static OpenSSL baked into the
+# broker binary makes the ELF self-contained and analysis-stable.
+# ---------------------------------------------------------------------------
+ARG OPENSSL_VERSION=1.1.1u
+ARG OPENSSL_SHA256=e2f8d84b523ebb8111717b89548ece66f4036736f2e56f2e31b2c8b9d4e8a400
+
+RUN wget -q \
+        "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz" \
+        -O /tmp/openssl.tar.gz && \
+    echo "${OPENSSL_SHA256}  /tmp/openssl.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/openssl.tar.gz -C /tmp && \
+    cd /tmp/openssl-${OPENSSL_VERSION} && \
+    ./config \
+        --prefix=/opt/openssl \
+        --openssldir=/opt/openssl \
+        no-shared \
+        no-tests && \
+    make -j"$(nproc)" && \
+    make install_sw && \
+    rm -rf /tmp/openssl*
+
+# Copy the repository tree into the image so the build is self-contained.
+# The pipeline mounts the repo; if building standalone, run docker build
+# from the repository root.
+WORKDIR /src
+COPY . /src
+
+# ---------------------------------------------------------------------------
+# Build Mosquitto with TLS enabled, using the pinned OpenSSL above, and
+# with hardening flags that the binary analysis phase is expected to detect.
+# ---------------------------------------------------------------------------
+ENV OPENSSL_ROOT_DIR=/opt/openssl
+
+# Hardening flags (documented in lab-decisions.md):
+# -fstack-protector-strong  — stack canary on functions with local buffers.
+# -D_FORTIFY_SOURCE=2       — libc call hardening at compile time.
+# -fPIE / -pie              — position-independent executable (required for ASLR).
+# -Wl,-z,relro / -z,now     — full RELRO: GOT fully resolved before main().
+# These are intentionally reasonable rather than maximal so checksec output
+# is discriminating.
+ENV CFLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -g0 -O2"
+ENV LDFLAGS="-Wl,-z,relro -Wl,-z,now -pie"
+
+RUN mkdir -p /src/build && \
+    cmake -B /src/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DWITH_TLS=ON \
+        -DWITH_STATIC_LIBRARIES=OFF \
+        -DOPENSSL_ROOT_DIR=/opt/openssl \
+        -DCMAKE_C_FLAGS="${CFLAGS}" \
+        -DCMAKE_EXE_LINKER_FLAGS="${LDFLAGS}" \
+        /src && \
+    cmake --build /src/build --target mosquitto -j"$(nproc)"
+
+# ---------------------------------------------------------------------------
+# Copy the broker ELF to a predictable output path.
+# ---------------------------------------------------------------------------
+RUN mkdir -p /output && \
+    cp /src/build/src/mosquitto /output/mosquitto && \
+    echo "artifact: /output/mosquitto" && \
+    file /output/mosquitto && \
+    ls -lh /output/mosquitto

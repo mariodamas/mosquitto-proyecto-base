@@ -1,0 +1,27 @@
+# .lab/.gitignore
+# Generated artifacts on the experimental lab branch.
+# These paths are produced by build_*.sh, run_campaigns.sh,
+# measure_coverage.sh, and build_artifact.sh. They are regenerated per run
+# and must not be committed.
+
+fuzzing/build/
+fuzzing/findings/
+fuzzing/coverage/
+docker/output/
+
+# Any ad-hoc result directory a phase may create at runtime.
+results/
+**/results/
+
+# Common sanitizer / profiler droppings.
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+core
+core.*
+
+# Editor / OS noise.
+*.swp
+*.swo
+.DS_Store
