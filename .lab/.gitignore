@@ -21,6 +21,9 @@ results/
 core
 core.*
 
+# Validation script results (also covered by **/results/ above — explicit for clarity).
+validate/results/
+
 # Editor / OS noise.
 *.swp
 *.swo
