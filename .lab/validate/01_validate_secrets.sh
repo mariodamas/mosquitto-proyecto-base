@@ -12,7 +12,7 @@ set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LAB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RESULTS_DIR="${LAB_DIR}/validate/results"
+RESULTS_DIR="${RESULTS_DIR:-${LAB_DIR}/validate/results}"
 mkdir -p "${RESULTS_DIR}"
 
 echo "=== [Gitleaks] validation starting ==="

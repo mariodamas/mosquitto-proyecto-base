@@ -40,17 +40,20 @@ broker build. The vendoring exercise tests whether the pipeline's SBOM and
 SCA phases can identify unmanaged third-party C source, a common weakness in
 embedded C/C++ projects where package managers are absent.
 
-## What analysis phases should detect this
+## What analysis phases detect this
 
-| Phase | Expected finding in this lab |
-|-------|------------------------------|
-| SCA (Snyk unmanaged, stage 06) | Primary/authoritative detection path for vendored cJSON and related CVEs |
-| SBOM (Syft, stage 04) | May not include `cjson@1.7.14` in the current repository-wide source scan |
-| SCA (Grype, stage 05) | Depends on SBOM contents; if cJSON is absent from SBOM, Grype can report 0 matches |
-| SAST (semgrep / cppcheck) | May show generic code issues, but not CVE attribution for vendored fingerprinting |
+| Phase | Expected finding |
+|-------|-----------------|
+| SCA — Grype (stage 05, scan 2/2) | **Primary detection path** — CVE lookup via purl in vendor manifest |
+| SCA — Snyk --unmanaged (stage 06) | Fingerprinting against Snyk DB — may return 0 if cJSON not in DB (known limitation) |
+| SBOM — Syft (stage 04) | Not detected — no package manifest for C/C++ source |
 
-So, for this branch and pipeline design, the expected CVE signal for vendored
-cJSON should be evaluated from Snyk unmanaged results.
+**Key finding from lab validation:**
+Snyk `--unmanaged`, Syft, and Grype (fed the Syft SBOM) all returned 0 detections
+for cJSON 1.7.14. This confirmed the canonical C/C++ SCA blind spot. The
+authoritative detection path is Grype scanning the hand-curated vendor manifest
+at `.lab/sca/vendor-manifest.cdx.json`. This gap is documented in
+`.lab/docs/lab-decisions.md` as a pipeline-risk finding.
 
 ## Integration with the lab build
 

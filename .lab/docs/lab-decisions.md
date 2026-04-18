@@ -159,6 +159,63 @@ The Dockerfile sets `CFLAGS` with `-fstack-protector-strong`,
 binary analysis phase should *detect* their presence / absence; making them
 maximal would collapse the detection signal.
 
+## SCA enrichment — vendor manifest
+
+### Why a hand-curated CycloneDX vendor manifest
+
+Automated SBOM tools (Syft, Snyk `--unmanaged`) were unable to detect any of
+Mosquitto's vendored C/C++ components during the lab validation phase:
+
+- **Syft** produced an SBOM with 0 C/C++ components. Syft's detection model is
+  manifest-driven (`package.json`, `go.sum`, `Cargo.lock`, …). There is no
+  manifest for header-only or source-vendored C libraries. This is a structural
+  limitation, not a configuration error.
+- **Snyk `--unmanaged`** reported 0 dependencies and 0 vulnerabilities against
+  `.lab/vendor/cjson-1.7.14/`. Snyk's source fingerprinting database did not
+  produce a match against the cJSON 1.7.14 source files during testing.
+- **Grype** (fed the Syft SBOM) consequently also found 0 matches.
+
+This is the canonical SCA blind spot for embedded C/C++ projects. The industry
+practice — documented by NTIA, CISA, and the OpenChain/SPDX working groups —
+is to supplement automated tooling with a hand-curated manifest that declares
+the components the tooling cannot discover.
+
+### What the manifest covers
+
+`.lab/sca/vendor-manifest.cdx.json` (CycloneDX 1.4) declares three components
+identified by manual inspection of the source tree:
+
+| Component | Version | Location | Detection method |
+|-----------|---------|----------|------------------|
+| uthash    | 2.1.0   | `deps/uthash.h` | header comment + GitHub tag |
+| utlist    | 2.1.0   | `deps/utlist.h` | header comment + GitHub tag |
+| cJSON     | 1.7.14  | `.lab/vendor/cjson-1.7.14/` + `snap/snapcraft.yaml` | explicit version in snapcraft source entry |
+
+Each component carries a `purl` (Package URL) so that downstream vulnerability
+scanners (Grype, OSV-Scanner) can look up matching CVEs.
+
+### How the manifest integrates into the pipeline
+
+`05_validate_sca_grype.sh` performs two sequential scans:
+
+1. **Scan 1** — Syft SBOM (`sbom-cyclonedx.json`): validates that Grype runs
+   correctly and reflects the automated tooling result. Expected result: 0 or
+   very few matches.
+2. **Scan 2** — vendor manifest (`vendor-manifest.cdx.json`): queries Grype
+   against the curated component list. Expected result: CVE matches for
+   cJSON 1.7.14 (if the version has known advisories in the Grype database).
+
+The two scan results are saved separately so the pipeline can report both the
+automated blind spot and the enriched finding side by side.
+
+### Why this is a TFG-level finding, not just a workaround
+
+The inability of three state-of-the-art SCA tools to detect vendored C/C++
+dependencies from source alone is itself a pipeline-risk finding. Documenting
+the gap and closing it with a vendor manifest is the recommended remediation.
+This demonstrates the full DevSecOps cycle: detect → understand → remediate →
+validate.
+
 ## Deviations from the requested plan
 
 None that change semantics. Noted details:

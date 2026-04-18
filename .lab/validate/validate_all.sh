@@ -18,6 +18,11 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+# RESULTS_DIR can be overridden by the caller (e.g. Jenkins sets WORKSPACE-relative path).
+# Default: .lab/validate/results/ relative to this script.
+RESULTS_DIR="${RESULTS_DIR:-${HERE}/results}"
+export RESULTS_DIR
+
 echo "========================================================"
 echo " Mosquitto Lab — Full Validation Suite"
 echo "========================================================"

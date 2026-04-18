@@ -1,28 +1,33 @@
 #!/bin/sh
 # 06_validate_sca_snyk.sh
 # -----------------------
-# Smoke-test for Snyk CLI in --unmanaged mode: scan the intentionally
-# vulnerable vendored dependency (cJSON 1.7.14) for known CVEs.
-# Follows the benchmark-sca phase2 Snyk --unmanaged pattern.
+# Smoke-test for Snyk CLI in --unmanaged mode: fingerprint-scan each
+# vendored C/C++ dependency for known CVEs.
+#
+# IMPORTANT — detection model:
+#   Snyk --unmanaged uses source code fingerprinting against Snyk's OSS DB.
+#   It does NOT read CycloneDX/SPDX manifests. The vendor manifest at
+#   .lab/sca/vendor-manifest.cdx.json is consumed by Grype (stage 05), not Snyk.
+#   If a library's source is not in Snyk's fingerprint database, Snyk will
+#   report 0 vulnerabilities — this is a known limitation, not a tool error,
+#   and is documented as a pipeline-risk finding in lab-decisions.md.
+#
+# Vendored targets scanned:
+#   - .lab/vendor/cjson-1.7.14/          (cJSON 1.7.14)
+#   - .lab/vendor/libwebsockets-2.4.2/   (libwebsockets 2.4.2)
 #
 # Prerequisites:
 #   SNYK_TOKEN environment variable must be set to a valid Snyk API token.
-#   The vendored library must exist at .lab/vendor/cjson-1.7.14/.
-#
-# Note: Snyk exits non-zero when vulnerabilities are found. Exit codes:
-#   0  — no vulnerabilities (tool ran correctly)
-#   1  — vulnerabilities found (also PASS — tool ran correctly)
-#   >1 — tool error (FAIL)
 #
 # Exit codes for this script:
-#   0  — Snyk ran correctly (0 or 1 from Snyk)
-#   1  — SNYK_TOKEN missing, vendor dir missing, or Snyk tool error
+#   0  — Snyk ran against all vendor dirs (0 or 1 from each run = PASS)
+#   1  — SNYK_TOKEN missing, vendor dir missing, or Snyk tool error (exit >1)
 
 set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LAB_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RESULTS_DIR="${LAB_DIR}/validate/results"
+RESULTS_DIR="${RESULTS_DIR:-${LAB_DIR}/validate/results}"
 mkdir -p "${RESULTS_DIR}"
 
 echo "=== [Snyk] validation starting ==="
@@ -46,61 +51,90 @@ fi
 
 snyk --version
 
-# Vendored dependency must exist (created as part of lab branch setup).
-VENDOR_DIR="${LAB_DIR}/vendor/cjson-1.7.14"
-if [ ! -d "${VENDOR_DIR}" ]; then
-    echo "ERROR: ${VENDOR_DIR} not found." >&2
-    echo "       The lab branch should include this vendored dependency." >&2
-    exit 1
-fi
-
-echo "--- Running Snyk --unmanaged on ${VENDOR_DIR} ---"
-# --unmanaged : fingerprint-based scan for C/C++ vendored code without a
-#               package manifest; matches source hashes against Snyk's vuln DB.
-# --json      : machine-readable output piped to the results file.
-# 2>&1        : capture both stdout (JSON) and stderr (progress/auth messages).
-#
-# Snyk exits 0 (no vulns) or 1 (vulns found) — both are PASS for this smoke-test.
-# Exit >1 means a tool/auth error — that is a FAIL.
-set +e
-snyk test --unmanaged "${VENDOR_DIR}" \
-    --json > "${RESULTS_DIR}/snyk_unmanaged_result.json" 2>&1
-SNYK_EXIT=$?
-set -e
-
-if [ "${SNYK_EXIT}" -gt 1 ]; then
-    echo "ERROR: Snyk exited with code ${SNYK_EXIT} (tool error, not findings)" >&2
-    echo "       Check ${RESULTS_DIR}/snyk_unmanaged_result.json for details." >&2
-    echo "=== [Snyk] validation FAILED ===" >&2
-    exit 1
-fi
-
-# Post-run: parse the JSON to surface the finding count.
-if [ -s "${RESULTS_DIR}/snyk_unmanaged_result.json" ]; then
+# ── Helper: parse Snyk JSON vuln count ───────────────────────────────────────
+snyk_vuln_count() {
+    RESULT_FILE="$1"
+    if [ ! -s "${RESULT_FILE}" ]; then
+        echo "0"
+        return
+    fi
     python3 -c "
 import json, sys
 try:
-    d = json.load(open('${RESULTS_DIR}/snyk_unmanaged_result.json'))
-    # Snyk unmanaged JSON can be either a dict or a list of dicts depending on version.
+    d = json.load(open('${RESULT_FILE}'))
     def vuln_count(obj):
         if isinstance(obj, dict):
-            vulns = obj.get('vulnerabilities')
-            if isinstance(vulns, list):
-                return len(vulns)
-            issues = obj.get('issues')
-            if isinstance(issues, list):
-                return len(issues)
-            return 0
-        if isinstance(obj, list):
-            return sum(vuln_count(item) for item in obj)
-        return 0
-
-    print(f'Snyk vulnerabilities found: {vuln_count(d)}')
+            v = obj.get('vulnerabilities') or obj.get('issues')
+            return len(v) if isinstance(v, list) else 0
+        return sum(vuln_count(i) for i in obj) if isinstance(obj, list) else 0
+    print(vuln_count(d))
 except Exception as e:
-    print(f'Note: could not parse JSON ({e}) — raw output in results file')
-" || true
-fi
+    print(0)
+" 2>/dev/null || echo "0"
+}
 
-echo "Snyk exit code: ${SNYK_EXIT} (0=no vulns, 1=vulns found — both are PASS)"
-echo "Snyk findings saved to ${RESULTS_DIR}/snyk_unmanaged_result.json"
+# ── Helper: run one Snyk --unmanaged scan ────────────────────────────────────
+snyk_scan() {
+    LABEL="$1"
+    TARGET_DIR="$2"
+    OUT_FILE="$3"
+
+    if [ ! -d "${TARGET_DIR}" ]; then
+        echo "ERROR: ${TARGET_DIR} not found." >&2
+        echo "       The lab branch must include this vendored dependency." >&2
+        return 1
+    fi
+
+    echo "--- Scanning ${LABEL} (${TARGET_DIR}) ---"
+    # --unmanaged : fingerprint-based scan for C/C++ vendored code.
+    # Snyk exits 0 (no vulns) or 1 (vulns found) — both are PASS.
+    # Exit >1 is a tool error — propagate as failure.
+    set +e
+    snyk test --unmanaged "${TARGET_DIR}" \
+        --json > "${OUT_FILE}" 2>&1
+    SNYK_EXIT=$?
+    set -e
+
+    if [ "${SNYK_EXIT}" -gt 1 ]; then
+        echo "ERROR: Snyk exited with code ${SNYK_EXIT} for ${LABEL}" >&2
+        echo "       Check ${OUT_FILE} for details." >&2
+        return 1
+    fi
+
+    COUNT="$(snyk_vuln_count "${OUT_FILE}")"
+    echo "  Snyk exit ${SNYK_EXIT} | vulnerabilities found: ${COUNT}"
+    echo "  Results: ${OUT_FILE}"
+    return 0
+}
+
+# ── Scan 1: cJSON 1.7.14 ─────────────────────────────────────────────────────
+echo ""
+snyk_scan \
+    "cJSON 1.7.14" \
+    "${LAB_DIR}/vendor/cjson-1.7.14" \
+    "${RESULTS_DIR}/snyk_cjson_result.json"
+
+# ── Scan 2: libwebsockets 2.4.2 ──────────────────────────────────────────────
+echo ""
+snyk_scan \
+    "libwebsockets 2.4.2" \
+    "${LAB_DIR}/vendor/libwebsockets-2.4.2" \
+    "${RESULTS_DIR}/snyk_libwebsockets_result.json"
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Summary ---"
+CJSON_COUNT="$(snyk_vuln_count "${RESULTS_DIR}/snyk_cjson_result.json")"
+LWS_COUNT="$(snyk_vuln_count "${RESULTS_DIR}/snyk_libwebsockets_result.json")"
+echo "  cJSON 1.7.14          : ${CJSON_COUNT} vulnerability/ies"
+echo "  libwebsockets 2.4.2   : ${LWS_COUNT} vulnerability/ies"
+echo ""
+echo "  NOTE: 0 findings may indicate library not in Snyk's fingerprint DB."
+echo "  This is a known C/C++ SCA limitation — see .lab/docs/lab-decisions.md."
+echo "  CVE detection for these components is provided by Grype (stage 05)"
+echo "  via the curated vendor manifest at .lab/sca/vendor-manifest.cdx.json."
+echo ""
+echo "Results saved to:"
+echo "  ${RESULTS_DIR}/snyk_cjson_result.json"
+echo "  ${RESULTS_DIR}/snyk_libwebsockets_result.json"
 echo "=== [Snyk] validation PASSED ==="

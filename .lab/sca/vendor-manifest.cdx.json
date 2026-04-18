@@ -1,0 +1,160 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "serialNumber": "urn:uuid:lab-vendor-manifest-mosquitto-v2.0.18",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-04-18T00:00:00Z",
+    "component": {
+      "type": "application",
+      "name": "eclipse-mosquitto",
+      "version": "2.0.18",
+      "purl": "pkg:github/eclipse/mosquitto@v2.0.18"
+    },
+    "tools": [
+      {
+        "name": "lab-vendor-manifest",
+        "version": "1.0.0",
+        "description": "Hand-curated CycloneDX BOM fragment for vendored C/C++ dependencies that automated SBOM tools (Syft, Snyk --unmanaged) cannot detect from source alone. Components were identified by inspecting deps/, vendor/, and snap/snapcraft.yaml."
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "uthash",
+      "version": "2.1.0",
+      "description": "Hash table for C structures, vendored as header-only in deps/uthash.h",
+      "purl": "pkg:github/troydhanson/uthash@v2.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-1-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/troydhanson/uthash"
+        }
+      ],
+      "properties": [
+        {
+          "name": "lab:vendored-path",
+          "value": "deps/uthash.h"
+        },
+        {
+          "name": "lab:detection-method",
+          "value": "manual-inspection"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "utlist",
+      "version": "2.1.0",
+      "description": "Linked list macros for C, vendored as header-only in deps/utlist.h",
+      "purl": "pkg:github/troydhanson/uthash@v2.1.0",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-1-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/troydhanson/uthash"
+        }
+      ],
+      "properties": [
+        {
+          "name": "lab:vendored-path",
+          "value": "deps/utlist.h"
+        },
+        {
+          "name": "lab:detection-method",
+          "value": "manual-inspection"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cJSON",
+      "version": "1.7.14",
+      "description": "Ultralightweight JSON parser in ANSI C, vendored in .lab/vendor/cjson-1.7.14/ and referenced in snap/snapcraft.yaml",
+      "purl": "pkg:github/DaveGamble/cJSON@v1.7.14",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/DaveGamble/cJSON"
+        },
+        {
+          "type": "distribution",
+          "url": "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.14.tar.gz"
+        }
+      ],
+      "properties": [
+        {
+          "name": "lab:vendored-path",
+          "value": ".lab/vendor/cjson-1.7.14/"
+        },
+        {
+          "name": "lab:detection-method",
+          "value": "manual-inspection"
+        },
+        {
+          "name": "lab:purpose",
+          "value": "sca-signal-validation — intentionally vendored vulnerable version to validate SCA detection capability"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "libwebsockets",
+      "version": "2.4.2",
+      "description": "C WebSockets library. Version 2.4.2 is pinned in snap/snapcraft.yaml for the Mosquitto Snap package build.",
+      "purl": "pkg:github/warmcat/libwebsockets@v2.4.2",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1-only"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/warmcat/libwebsockets"
+        },
+        {
+          "type": "distribution",
+          "url": "https://github.com/warmcat/libwebsockets/archive/v2.4.2.tar.gz"
+        }
+      ],
+      "properties": [
+        {
+          "name": "lab:vendored-path",
+          "value": ".lab/vendor/libwebsockets-2.4.2/"
+        },
+        {
+          "name": "lab:detection-method",
+          "value": "manual-inspection + snap/snapcraft.yaml"
+        },
+        {
+          "name": "lab:purpose",
+          "value": "sca-signal-validation — old version pinned by upstream Snap build, included as second SCA detection target"
+        }
+      ]
+    }
+  ]
+}
