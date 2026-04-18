@@ -104,3 +104,6 @@ obj-*/
 
 # Others
 tmp/
+
+# Local secrets
+.env.local

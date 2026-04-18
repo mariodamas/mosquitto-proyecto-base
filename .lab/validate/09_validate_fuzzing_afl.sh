@@ -7,12 +7,12 @@
 # AFL++ pattern.
 #
 # Adaptation note (same as 08_validate_fuzzing_libfuzzer.sh):
-#   Uses the full lib/ TU set from build_afl.sh rather than the spec's
-#   simplified src/packet_mosq.c. Recorded in .lab/docs/lab-decisions.md.
+#   Uses a minimal parser-focused TU set plus a tiny logger stub to keep
+#   link closure stable for standalone harness validation.
 #
 # Exit codes:
-#   0  — harness compiled, AFL++ ran for ~30 s, findings directory created
-#   1  — afl-clang-fast missing, compile failed, or output dir not created
+#   0  - harness compiled, AFL++ ran for ~30 s, findings directory created
+#   1  - afl-clang-fast missing, compile failed, or output dir not created
 
 set -eu
 
@@ -25,8 +25,7 @@ MOSQUITTO_SRC="${MOSQUITTO_SRC:-${REPO_ROOT}}"
 
 echo "=== [AFL++] validation starting ==="
 
-# core_pattern check — AFL++ prints a hard error if this is not set to "core".
-# We warn but do not abort; some systems (containers, WSL2) override this.
+# core_pattern check - AFL++ can hard-fail when this is not "core".
 CORE_PATTERN="$(cat /proc/sys/kernel/core_pattern 2>/dev/null || echo unknown)"
 if [ "${CORE_PATTERN}" != "core" ]; then
     echo "WARNING: core_pattern is '${CORE_PATTERN}', not 'core'."
@@ -48,6 +47,12 @@ if [ ! -f "${HARNESS}" ]; then
     exit 1
 fi
 
+LOG_STUB="${LAB_DIR}/fuzzing/harnesses/fuzz_log_stub.c"
+if [ ! -f "${LOG_STUB}" ]; then
+    echo "ERROR: log stub not found at ${LOG_STUB}" >&2
+    exit 1
+fi
+
 CORPUS_DIR="${LAB_DIR}/fuzzing/corpus/mqtt"
 if [ ! -d "${CORPUS_DIR}" ]; then
     echo "ERROR: corpus directory not found at ${CORPUS_DIR}" >&2
@@ -57,22 +62,80 @@ fi
 echo "--- Compiling fuzz_packet_parser with afl-clang-fast + ASan + UBSan ---"
 # AFL_USE_ASAN=1  : embed AddressSanitizer into the instrumented binary
 # AFL_USE_UBSAN=1 : embed UndefinedBehaviorSanitizer into the binary
-# These env vars are read by afl-clang-fast at compile time; they must be
-# exported so the compiler wrapper sees them, not just the parent shell.
 export AFL_USE_ASAN=1
 export AFL_USE_UBSAN=1
 
-# -g -O1 : debug info + light optimisation (AFL++ does not support -fsanitize=fuzzer)
-# The same COMMON_CFLAGS as build_afl.sh mirror the upstream build macros.
+AFL_DRIVER="${RESULTS_DIR}/afl_file_driver_validate.c"
+cat > "${AFL_DRIVER}" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
+
+int main(int argc, char **argv)
+{
+    FILE *f;
+    long sz;
+    uint8_t *buf;
+    size_t n;
+
+    if(argc < 2){
+        return 0;
+    }
+
+    f = fopen(argv[1], "rb");
+    if(!f){
+        return 0;
+    }
+
+    if(fseek(f, 0, SEEK_END) != 0){
+        fclose(f);
+        return 0;
+    }
+
+    sz = ftell(f);
+    if(sz < 0){
+        fclose(f);
+        return 0;
+    }
+
+    if(fseek(f, 0, SEEK_SET) != 0){
+        fclose(f);
+        return 0;
+    }
+
+    if(sz == 0){
+        fclose(f);
+        return LLVMFuzzerTestOneInput(NULL, 0);
+    }
+
+    buf = (uint8_t *)malloc((size_t)sz);
+    if(!buf){
+        fclose(f);
+        return 0;
+    }
+
+    n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+
+    LLVMFuzzerTestOneInput(buf, n);
+    free(buf);
+    return 0;
+}
+EOF
+
 afl-clang-fast -g -O1 \
     -DWITH_BROKER -DWITH_BRIDGE -DWITH_TLS=0 -DWITH_THREADING \
+    "${AFL_DRIVER}" \
     "${HARNESS}" \
     "${MOSQUITTO_SRC}/lib/property_mosq.c" \
     "${MOSQUITTO_SRC}/lib/packet_datatypes.c" \
     "${MOSQUITTO_SRC}/lib/memory_mosq.c" \
-    "${MOSQUITTO_SRC}/lib/util_mosq.c" \
-    "${MOSQUITTO_SRC}/lib/util_topic.c" \
-    "${MOSQUITTO_SRC}/lib/misc_mosq.c" \
+    "${MOSQUITTO_SRC}/lib/utf8_mosq.c" \
+    "${LOG_STUB}" \
+    -I "${MOSQUITTO_SRC}/" \
+    -I "${MOSQUITTO_SRC}/deps/" \
     -I "${MOSQUITTO_SRC}/include/" \
     -I "${MOSQUITTO_SRC}/lib/" \
     -I "${MOSQUITTO_SRC}/src/" \
@@ -81,21 +144,16 @@ afl-clang-fast -g -O1 \
 echo "Compile succeeded: ${RESULTS_DIR}/fuzz_packet_parser_afl_validate"
 
 echo "--- Preparing isolated corpus for validation run ---"
-# Copy corpus to a writable directory; AFL++ may mutate seeds in-place.
+rm -rf "${RESULTS_DIR}/afl_validate_corpus" "${RESULTS_DIR}/afl_validate_findings"
 mkdir -p "${RESULTS_DIR}/afl_validate_corpus"
 cp "${CORPUS_DIR}/"* "${RESULTS_DIR}/afl_validate_corpus/"
 
 echo "--- Running AFL++ for ~30 seconds (validation run) ---"
-# AFL_NO_UI=1       : disable the interactive ncurses UI; required in CI / non-tty
-# AFL_SKIP_CPUFREQ=1: skip the CPU-frequency governor check that AFL++ enforces
-#                     on bare-metal hosts; avoids a hard abort on cloud VMs
-# -i : input corpus directory
-# -o : output/findings directory
-# -t 1000 : per-test-case timeout in ms (1 s; Mosquitto parsing is fast)
-# @@ : AFL++ replaces @@ with the path to the current mutated input file
-# timeout 35 ... || true : AFL++ exits non-zero when killed by timeout;
-#   we use || true and check the output directory instead of the exit code.
-AFL_NO_UI=1 AFL_SKIP_CPUFREQ=1 \
+# AFL_NO_UI=1       : disable interactive ncurses UI for non-tty runs
+# AFL_SKIP_CPUFREQ=1: skip CPU governor strictness checks
+# AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1: bypass core_pattern hard stop
+# timeout 35 ... || true : AFL++ exits non-zero when killed by timeout
+AFL_NO_UI=1 AFL_SKIP_CPUFREQ=1 AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
 timeout 35 afl-fuzz \
     -i "${RESULTS_DIR}/afl_validate_corpus/" \
     -o "${RESULTS_DIR}/afl_validate_findings/" \
@@ -110,10 +168,13 @@ if [ ! -d "${RESULTS_DIR}/afl_validate_findings" ]; then
     exit 1
 fi
 
-# AFL++ creates at minimum a default/queue subdirectory with processed seeds.
-QUEUE_COUNT="$(find "${RESULTS_DIR}/afl_validate_findings" -type f | wc -l)"
+QUEUE_COUNT="$(find "${RESULTS_DIR}/afl_validate_findings" -type f | wc -l | tr -d '[:space:]')"
+if [ -z "${QUEUE_COUNT}" ]; then
+    QUEUE_COUNT="0"
+fi
+
 if [ "${QUEUE_COUNT}" -eq 0 ]; then
-    echo "ERROR: AFL++ findings directory is empty — fuzzer may not have started" >&2
+    echo "ERROR: AFL++ findings directory is empty - fuzzer may not have started" >&2
     echo "       Check ${RESULTS_DIR}/afl_validate.log for details." >&2
     echo "=== [AFL++] validation FAILED ===" >&2
     exit 1

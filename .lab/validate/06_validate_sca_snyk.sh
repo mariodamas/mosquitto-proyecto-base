@@ -27,8 +27,12 @@ mkdir -p "${RESULTS_DIR}"
 
 echo "=== [Snyk] validation starting ==="
 
+# Normalize token to avoid CRLF/header issues when sourced from Windows .env files.
+SNYK_TOKEN_CLEAN="$(printf '%s' "${SNYK_TOKEN:-}" | tr -d '\r\n')"
+export SNYK_TOKEN="${SNYK_TOKEN_CLEAN}"
+
 # Token check — Snyk CLI requires authentication; fail early with a clear message.
-if [ -z "${SNYK_TOKEN:-}" ]; then
+if [ -z "${SNYK_TOKEN}" ]; then
     echo "ERROR: SNYK_TOKEN environment variable not set." >&2
     echo "       Export a valid Snyk API token before running this script." >&2
     exit 1
@@ -77,9 +81,21 @@ if [ -s "${RESULTS_DIR}/snyk_unmanaged_result.json" ]; then
 import json, sys
 try:
     d = json.load(open('${RESULTS_DIR}/snyk_unmanaged_result.json'))
-    # Snyk unmanaged JSON may have 'vulnerabilities' or 'issues' key depending on version.
-    vulns = d.get('vulnerabilities', d.get('issues', []))
-    print(f'Snyk vulnerabilities found: {len(vulns)}')
+    # Snyk unmanaged JSON can be either a dict or a list of dicts depending on version.
+    def vuln_count(obj):
+        if isinstance(obj, dict):
+            vulns = obj.get('vulnerabilities')
+            if isinstance(vulns, list):
+                return len(vulns)
+            issues = obj.get('issues')
+            if isinstance(issues, list):
+                return len(issues)
+            return 0
+        if isinstance(obj, list):
+            return sum(vuln_count(item) for item in obj)
+        return 0
+
+    print(f'Snyk vulnerabilities found: {vuln_count(d)}')
 except Exception as e:
     print(f'Note: could not parse JSON ({e}) — raw output in results file')
 " || true

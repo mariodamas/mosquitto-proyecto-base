@@ -5,18 +5,19 @@
 # run it for 30 seconds to confirm the fuzzer starts, executes test cases, and
 # produces exec/s > 0. Follows the benchmark-fuzzing libFuzzer pattern.
 #
-# Adaptation note (per spec §08 "Note from benchmark-fuzzing"):
+# Adaptation note (per spec 08 "Note from benchmark-fuzzing"):
 #   The spec lists src/packet_mosq.c as the only extra TU. However, the harness
 #   uses property__read_all and related symbols that live in the lib/ TUs used
-#   by build_libfuzzer.sh. Using those same TUs here keeps validation consistent
-#   with the production build. This deviation is recorded in .lab/docs/lab-decisions.md.
+#   by build_libfuzzer.sh. For this smoke-test we keep a minimal parser-focused
+#   TU set and add a tiny log stub, avoiding unrelated broker/network deps.
+#   This deviation is recorded in .lab/docs/lab-decisions.md.
 #
 # Variables:
 #   MOSQUITTO_SRC  : override repo root (default: auto-detected from script path)
 #
 # Exit codes:
-#   0  — harness compiled, ran for 30 s, exec/s > 0
-#   1  — clang missing, compile failed, or fuzzer produced no executions
+#   0  - harness compiled, ran for 30 s, exec/s > 0
+#   1  - clang missing, compile failed, or fuzzer produced no executions
 
 set -eu
 
@@ -44,6 +45,12 @@ if [ ! -f "${HARNESS}" ]; then
     exit 1
 fi
 
+LOG_STUB="${LAB_DIR}/fuzzing/harnesses/fuzz_log_stub.c"
+if [ ! -f "${LOG_STUB}" ]; then
+    echo "ERROR: log stub not found at ${LOG_STUB}" >&2
+    exit 1
+fi
+
 CORPUS_DIR="${LAB_DIR}/fuzzing/corpus/mqtt"
 if [ ! -d "${CORPUS_DIR}" ]; then
     echo "ERROR: corpus directory not found at ${CORPUS_DIR}" >&2
@@ -54,22 +61,22 @@ mkdir -p "${RESULTS_DIR}/libfuzzer_artifacts"
 
 echo "--- Compiling fuzz_packet_parser with libFuzzer + ASan + UBSan ---"
 # -fsanitize=fuzzer    : links the libFuzzer engine and its main() driver
-# -fsanitize=address   : AddressSanitizer — catches heap/stack buffer overflows
-# -fsanitize=undefined : UndefinedBehaviorSanitizer — catches integer overflows etc.
+# -fsanitize=address   : AddressSanitizer - catches heap/stack buffer overflows
+# -fsanitize=undefined : UndefinedBehaviorSanitizer - catches integer overflows etc.
 # -g -O1               : debug info + minimal optimisation (standard for fuzz builds)
 # -DWITH_BROKER etc.   : mirror the macros used by the upstream build so private
 #                        headers compile without missing-declaration errors
-# The lib/ TUs provide the symbols the harness calls (property__read_all,
-# packet__read_*, mosquitto_property_free_all, memory allocators).
+# Keep link closure limited to parser-related code paths.
 clang -fsanitize=fuzzer,address,undefined -g -O1 \
     -DWITH_BROKER -DWITH_BRIDGE -DWITH_TLS=0 -DWITH_THREADING \
     "${HARNESS}" \
     "${MOSQUITTO_SRC}/lib/property_mosq.c" \
     "${MOSQUITTO_SRC}/lib/packet_datatypes.c" \
     "${MOSQUITTO_SRC}/lib/memory_mosq.c" \
-    "${MOSQUITTO_SRC}/lib/util_mosq.c" \
-    "${MOSQUITTO_SRC}/lib/util_topic.c" \
-    "${MOSQUITTO_SRC}/lib/misc_mosq.c" \
+    "${MOSQUITTO_SRC}/lib/utf8_mosq.c" \
+    "${LOG_STUB}" \
+    -I "${MOSQUITTO_SRC}/" \
+    -I "${MOSQUITTO_SRC}/deps/" \
     -I "${MOSQUITTO_SRC}/include/" \
     -I "${MOSQUITTO_SRC}/lib/" \
     -I "${MOSQUITTO_SRC}/src/" \
@@ -98,7 +105,7 @@ EXEC_COUNT="$(grep -E 'number_of_executed_units' \
 echo "libFuzzer executions: ${EXEC_COUNT}"
 
 if [ "${EXEC_COUNT}" -eq 0 ]; then
-    echo "ERROR: fuzzer ran but executed 0 units — something went wrong" >&2
+    echo "ERROR: fuzzer ran but executed 0 units - something went wrong" >&2
     echo "=== [libFuzzer] validation FAILED ===" >&2
     exit 1
 fi
