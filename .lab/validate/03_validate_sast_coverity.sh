@@ -25,6 +25,13 @@ mkdir -p "${RESULTS_DIR}"
 
 # Allow callers to override the Coverity installation path.
 COV_HOME="${COV_HOME:-/opt/cov-analysis}"
+BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build_cov}"
+COV_INT_DIR="${RESULTS_DIR}/cov-int"
+
+# Use an existing build directory if present, otherwise create one.
+if [ ! -d "${BUILD_DIR}" ]; then
+    BUILD_DIR="${REPO_ROOT}/build"
+fi
 
 echo "=== [Coverity] validation starting ==="
 
@@ -40,26 +47,41 @@ fi
 echo "Coverity installation: ${COV_HOME}"
 "${COV_HOME}/bin/cov-build" --version 2>/dev/null | head -1 || true
 
-echo "--- Step 1/2: cov-build (intercept Mosquitto compilation) ---"
+echo "--- Pre-step: configure compiler mappings for gcc/cc wrappers ---"
+"${COV_HOME}/bin/cov-configure" --comptype gcc --compiler /usr/bin/cc >/dev/null 2>&1 || true
+"${COV_HOME}/bin/cov-configure" --comptype g++ --compiler /usr/bin/c++ >/dev/null 2>&1 || true
+
+echo "--- Pre-step: ensure CMake build dir exists (docs disabled) ---"
+cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" -DWITH_DOCS=OFF >/dev/null
+
+echo "--- Step 1/3: cov-build (intercept Mosquitto compilation) ---"
 # --dir : the intermediate directory where Coverity stores captured TUs.
 #         We put it inside RESULTS_DIR so it gets cleaned with validate/results/.
+rm -rf "${COV_INT_DIR}" >/dev/null 2>&1 || true
+if [ -e "${COV_INT_DIR}" ]; then
+    COV_INT_DIR="${RESULTS_DIR}/cov-int-$(date +%Y%m%d%H%M%S)-$$"
+fi
+echo "Coverity intermediate directory: ${COV_INT_DIR}"
+make -C "${BUILD_DIR}" clean >/dev/null 2>&1 || true
 "${COV_HOME}/bin/cov-build" \
-    --dir "${RESULTS_DIR}/cov-int" \
-    make -C "${REPO_ROOT}/build" -j"$(nproc)"
+    --config "${COV_HOME}/config/coverity_config.xml" \
+    --dir "${COV_INT_DIR}" \
+    make -C "${BUILD_DIR}" -B -j"$(nproc)" mosquitto libmosquitto
 
-echo "--- Step 2/2: cov-analyze (produce findings) ---"
+echo "--- Step 2/3: cov-analyze (run static analysis) ---"
 # --all          : enable all checkers (equivalent to benchmark-sast default)
 # --security     : include security-focused checkers (TAINTED_DATA, etc.)
 # --concurrency  : include concurrency checkers (LOCK, DEADLOCK, etc.)
-# --output-format json : JSON v8 format for downstream parsing
-# --output-file  : where to write the findings
 "${COV_HOME}/bin/cov-analyze" \
-    --dir "${RESULTS_DIR}/cov-int" \
+    --dir "${COV_INT_DIR}" \
     --all \
     --security \
-    --concurrency \
-    --output-format json \
-    --output-file "${RESULTS_DIR}/coverity_result.json"
+    --concurrency
+
+echo "--- Step 3/3: cov-format-errors (export findings JSON) ---"
+"${COV_HOME}/bin/cov-format-errors" \
+    --dir "${COV_INT_DIR}" \
+    --json-output-v10 "${RESULTS_DIR}/coverity_result.json"
 
 if [ ! -s "${RESULTS_DIR}/coverity_result.json" ]; then
     echo "ERROR: ${RESULTS_DIR}/coverity_result.json missing or empty" >&2
