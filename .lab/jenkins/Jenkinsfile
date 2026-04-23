@@ -6,40 +6,37 @@ pipeline {
        timestamps()
    }
    environment {
-       RESULTS = "results"
+       RESULTS = 'results'
        EMBA_LOG_DIR = "/opt/devsecops-lab/emba-results/${JOB_NAME}/${BUILD_NUMBER}"
+       FUZZ_TIME = '60'
    }
    stages {
        stage('Checkout') {
            agent any
            steps {
                checkout scm
-               sh 'mkdir -p "${RESULTS}"'
+               sh '''
+                   set -e
+                   mkdir -p "${RESULTS}"
+               '''
            }
        }
        stage('Build') {
            agent {
                docker {
                    image 'devsecops-agente:1.0'
-                   args '''
-                       -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro
-                       -v /opt/devsecops-lab/codeql:/opt/codeql:ro
-                       -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/opt/owaspdc-data:ro
-                   '''
                    reuseNode true
                }
            }
            steps {
                sh '''
                    set -e
-                   mkdir -p build
-                   cd build
-                   cmake .. \
+                   cmake -S . -B build \
                      -DCMAKE_C_COMPILER=clang \
                      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                      -DDOCUMENTATION=OFF
-                   make -j$(nproc)
-                   ls -lh src/mosquitto || true
+                   cmake --build build -j"$(nproc)"
+                   ls -lh build/src/mosquitto || true
                '''
            }
        }
@@ -54,7 +51,7 @@ pipeline {
                sh '''
                    gitleaks detect --source . \
                        --report-format json \
-                       --report-path ${RESULTS}/gitleaks.json \
+                       --report-path "${RESULTS}/gitleaks.json" \
                        --no-git || true
                '''
            }
@@ -92,7 +89,7 @@ pipeline {
                      build/codeql-db \
                      /opt/codeql/codeql/qlpacks/codeql/cpp-queries/*/codeql-suites/cpp-security-and-quality.qls \
                      --format sarif-latest \
-                     --output ${RESULTS}/codeql.sarif \
+                     --output "${RESULTS}/codeql.sarif" \
                      --common-caches "${WORKSPACE}/.codeql-cache" || true
                '''
            }
@@ -113,11 +110,14 @@ pipeline {
                withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
                    sh '''
                        set -e
-                       export LM_LICENSE_FILE="${COV_LICENSE}"
+                       test -r "${COV_LICENSE}"
+                       cp "${COV_LICENSE}" "${WORKSPACE}/coverity-license.dat"
+                       chmod 600 "${WORKSPACE}/coverity-license.dat"
+                       export LM_LICENSE_FILE="${WORKSPACE}/coverity-license.dat"
                        mkdir -p "${WORKSPACE}/coverity-config"
                        rm -f "${WORKSPACE}/coverity-config/coverity_config.xml"
                        rm -rf build-coverity
-                       cov-configure \
+                       /opt/coverity/bin/cov-configure \
                          --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
                          --template \
                          --compiler clang \
@@ -126,20 +126,53 @@ pipeline {
                          -DCMAKE_C_COMPILER=clang \
                          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                          -DDOCUMENTATION=OFF
-                       cov-build \
+                       /opt/coverity/bin/cov-build \
                          --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
                          --dir build-coverity/cov-int \
-                         cmake --build build-coverity --clean-first -j$(nproc)
-                       cov-analyze --dir build-coverity/cov-int --all || true
-                       cov-format-errors \
+                         cmake --build build-coverity --clean-first -j"$(nproc)"
+                       /opt/coverity/bin/cov-analyze \
                          --dir build-coverity/cov-int \
-                         --json-output-v8 ${RESULTS}/coverity.json || true
+                         --all || true
+                       /opt/coverity/bin/cov-format-errors \
+                         --dir build-coverity/cov-int \
+                         --json-output-v8 "${RESULTS}/coverity.json" || true
                    '''
                }
            }
            post {
                always {
                    archiveArtifacts artifacts: 'results/coverity.json', allowEmptyArchive: true
+               }
+           }
+       }
+       stage('Fuzzing - libFuzzer smoke') {
+           agent {
+               docker {
+                   image 'devsecops-agente:1.0'
+                   reuseNode true
+               }
+           }
+           steps {
+               sh '''
+                   set -e
+                   cd .lab/fuzzing
+                   python3 corpus/generate_corpus.py
+                   bash ./build_libfuzzer.sh
+                   OUT="findings/libfuzzer/fuzz_packet_parser"
+                   mkdir -p "$OUT/corpus" "$OUT/crashes"
+                   cp -f corpus/mqtt/* "$OUT/corpus/" || true
+                   ./build/fuzz_packet_parser_libfuzzer \
+                       "$OUT/corpus" \
+                       -max_total_time="${FUZZ_TIME}" \
+                       -artifact_prefix="$OUT/crashes/" \
+                       -print_final_stats=1 \
+> "$OUT/run.log" 2>&1 || true
+               '''
+           }
+           post {
+               always {
+                   archiveArtifacts artifacts: '.lab/fuzzing/build/*_libfuzzer,.lab/fuzzing/findings/libfuzzer/**',
+                                    allowEmptyArchive: true
                }
            }
        }
@@ -152,8 +185,11 @@ pipeline {
            }
            steps {
                sh '''
+                   set -e
+                   mkdir -p "${WORKSPACE}/.cache"
+                   export XDG_CACHE_HOME="${WORKSPACE}/.cache"
                    syft dir:. \
-                       --output cyclonedx-json=${RESULTS}/sbom.cyclonedx.json
+                       --output cyclonedx-json="${RESULTS}/sbom.cyclonedx.json"
                '''
            }
            post {
@@ -172,10 +208,11 @@ pipeline {
            }
            steps {
                sh '''
-                   GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype \
+                   export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
+                   export GRYPE_DB_AUTO_UPDATE=false
                    grype sbom:${RESULTS}/sbom.cyclonedx.json \
                        --output json \
-                       --file ${RESULTS}/grype.json || true
+                       --file "${RESULTS}/grype.json" || true
                '''
            }
            post {
@@ -188,17 +225,21 @@ pipeline {
            agent {
                docker {
                    image 'devsecops-agente:1.0'
-                   args '-v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/opt/owaspdc-data:ro'
+                   args '-v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/opt/owaspdc-data-src:ro'
                    reuseNode true
                }
            }
            steps {
                sh '''
-                   dependency-check.sh \
+                   set -e
+                   rm -rf /tmp/owaspdc-data
+                   mkdir -p /tmp/owaspdc-data
+                   cp -r /opt/owaspdc-data-src/. /tmp/owaspdc-data/
+                   /opt/dependency-check/bin/dependency-check.sh \
                        --scan . \
                        --format JSON \
-                       --out ${RESULTS} \
-                       --data /opt/owaspdc-data \
+                       --out "${RESULTS}" \
+                       --data /tmp/owaspdc-data \
                        --noupdate \
                        --disableAssembly || true
                    if [ -f "${RESULTS}/dependency-check-report.json" ]; then
@@ -216,6 +257,7 @@ pipeline {
            agent any
            steps {
                sh '''
+                   set -e
                    mkdir -p "${EMBA_LOG_DIR}"
                    rm -rf "${EMBA_LOG_DIR:?}"/*
                    sudo -n /opt/emba/emba \
@@ -247,9 +289,9 @@ pipeline {
            steps {
                sh '''
                    checksec --file=build/src/mosquitto \
-                       --output=json > ${RESULTS}/checksec.json || true
+                       --output=json > "${RESULTS}/checksec.json" || true
                    hardening-check build/src/mosquitto \
-> ${RESULTS}/hardening-check.txt 2>&1 || true
+> "${RESULTS}/hardening-check.txt" 2>&1 || true
                '''
            }
            post {
@@ -262,10 +304,10 @@ pipeline {
    }
    post {
        success {
-           echo "Pipeline OK"
+           echo 'Pipeline OK'
        }
        failure {
-           echo "Pipeline FALLIDO"
+           echo 'Pipeline FALLIDO'
        }
        always {
            echo "Artefactos: ${BUILD_URL}artifact/results/"
