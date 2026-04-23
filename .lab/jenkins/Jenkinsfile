@@ -1,316 +1,394 @@
 pipeline {
-   agent none
-   options {
-       skipDefaultCheckout(true)
-       disableConcurrentBuilds()
-       timestamps()
-   }
-   environment {
-       RESULTS = 'results'
-       EMBA_LOG_DIR = "/opt/devsecops-lab/emba-results/${JOB_NAME}/${BUILD_NUMBER}"
-       FUZZ_TIME = '60'
-   }
-   stages {
-       stage('Checkout') {
-           agent any
-           steps {
-               checkout scm
-               sh '''
-                   set -e
-                   mkdir -p "${RESULTS}"
-               '''
-           }
-       }
-       stage('Build') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   set -e
-                   cmake -S . -B build \
-                     -DCMAKE_C_COMPILER=clang \
-                     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-                     -DDOCUMENTATION=OFF
-                   cmake --build build -j"$(nproc)"
-                   ls -lh build/src/mosquitto || true
-               '''
-           }
-       }
-       stage('Secrets Scan') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   gitleaks detect --source . \
-                       --report-format json \
-                       --report-path "${RESULTS}/gitleaks.json" \
-                       --no-git || true
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/gitleaks.json', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('SAST - CodeQL') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   args '-v /opt/devsecops-lab/codeql:/opt/codeql:ro'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   set -e
-                   mkdir -p "${WORKSPACE}/.codeql-cache"
-                   rm -rf build-codeql build/codeql-db
-                   cmake -S . -B build-codeql \
-                     -DCMAKE_C_COMPILER=clang \
-                     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-                     -DDOCUMENTATION=OFF
-                   /opt/codeql/codeql/codeql database create \
-                     build/codeql-db \
-                     --language=cpp \
-                     --source-root=. \
-                     --command="cmake --build build-codeql --clean-first -j$(nproc)" \
-                     --common-caches "${WORKSPACE}/.codeql-cache" \
-                     --overwrite
-                   /opt/codeql/codeql/codeql database analyze \
-                     build/codeql-db \
-                     /opt/codeql/codeql/qlpacks/codeql/cpp-queries/*/codeql-suites/cpp-security-and-quality.qls \
-                     --format sarif-latest \
-                     --output "${RESULTS}/codeql.sarif" \
-                     --common-caches "${WORKSPACE}/.codeql-cache" || true
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/codeql.sarif', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('SAST - Coverity') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   reuseNode true
-               }
-           }
-           steps {
-               withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
-                   sh '''
-                       set -e
-                       test -r "${COV_LICENSE}"
-                       cp "${COV_LICENSE}" "${WORKSPACE}/coverity-license.dat"
-                       chmod 600 "${WORKSPACE}/coverity-license.dat"
-                       export LM_LICENSE_FILE="${WORKSPACE}/coverity-license.dat"
-                       mkdir -p "${WORKSPACE}/coverity-config"
-                       rm -f "${WORKSPACE}/coverity-config/coverity_config.xml"
-                       rm -rf build-coverity
-                       /opt/coverity/bin/cov-configure \
-                         --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
-                         --template \
-                         --compiler clang \
-                         --comptype clangcc
-                       cmake -S . -B build-coverity \
-                         -DCMAKE_C_COMPILER=clang \
-                         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-                         -DDOCUMENTATION=OFF
-                       /opt/coverity/bin/cov-build \
-                         --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
-                         --dir build-coverity/cov-int \
-                         cmake --build build-coverity --clean-first -j"$(nproc)"
-                       /opt/coverity/bin/cov-analyze \
-                         --dir build-coverity/cov-int \
-                         --all || true
-                       /opt/coverity/bin/cov-format-errors \
-                         --dir build-coverity/cov-int \
-                         --json-output-v8 "${RESULTS}/coverity.json" || true
-                   '''
-               }
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/coverity.json', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('Fuzzing - libFuzzer smoke') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   set -e
-                   cd .lab/fuzzing
-                   python3 corpus/generate_corpus.py
-                   bash ./build_libfuzzer.sh
-                   OUT="findings/libfuzzer/fuzz_packet_parser"
-                   mkdir -p "$OUT/corpus" "$OUT/crashes"
-                   cp -f corpus/mqtt/* "$OUT/corpus/" || true
-                   ./build/fuzz_packet_parser_libfuzzer \
-                       "$OUT/corpus" \
-                       -max_total_time="${FUZZ_TIME}" \
-                       -artifact_prefix="$OUT/crashes/" \
-                       -print_final_stats=1 \
-> "$OUT/run.log" 2>&1 || true
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: '.lab/fuzzing/build/*_libfuzzer,.lab/fuzzing/findings/libfuzzer/**',
-                                    allowEmptyArchive: true
-               }
-           }
-       }
-       stage('SBOM') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   set -e
-                   mkdir -p "${WORKSPACE}/.cache"
-                   export XDG_CACHE_HOME="${WORKSPACE}/.cache"
-                   syft dir:. \
-                       --output cyclonedx-json="${RESULTS}/sbom.cyclonedx.json"
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/sbom.cyclonedx.json', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('SCA - Grype') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   args '-v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
-                   export GRYPE_DB_AUTO_UPDATE=false
-                   grype sbom:${RESULTS}/sbom.cyclonedx.json \
-                       --output json \
-                       --file "${RESULTS}/grype.json" || true
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/grype.json', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('SCA - OWASP DC') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   args '-v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/opt/owaspdc-data-src:ro'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   set -e
-                   rm -rf /tmp/owaspdc-data
-                   mkdir -p /tmp/owaspdc-data
-                   cp -r /opt/owaspdc-data-src/. /tmp/owaspdc-data/
-                   /opt/dependency-check/bin/dependency-check.sh \
-                       --scan . \
-                       --format JSON \
-                       --out "${RESULTS}" \
-                       --data /tmp/owaspdc-data \
-                       --noupdate \
-                       --disableAssembly || true
-                   if [ -f "${RESULTS}/dependency-check-report.json" ]; then
-                       mv "${RESULTS}/dependency-check-report.json" "${RESULTS}/owaspdc.json"
-                   fi
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/owaspdc.json', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('Firmware Analysis - EMBA') {
-           agent any
-           steps {
-               sh '''
-                   set -e
-                   mkdir -p "${EMBA_LOG_DIR}"
-                   rm -rf "${EMBA_LOG_DIR:?}"/*
-                   sudo -n /opt/emba/emba \
-                       -l "${EMBA_LOG_DIR}" \
-                       -f "${WORKSPACE}/build/src/mosquitto" \
-                       -p /opt/emba/scan-profiles/default-scan.emba \
-                       -y || true
-               '''
-           }
-           post {
-               always {
-                   sh '''
-                       mkdir -p "${RESULTS}/emba"
-                       if [ -d "${EMBA_LOG_DIR}" ]; then
-                           cp -r "${EMBA_LOG_DIR}/." "${RESULTS}/emba/" || true
-                       fi
-                   '''
-                   archiveArtifacts artifacts: 'results/emba/**', allowEmptyArchive: true
-               }
-           }
-       }
-       stage('Hardening') {
-           agent {
-               docker {
-                   image 'devsecops-agente:1.0'
-                   reuseNode true
-               }
-           }
-           steps {
-               sh '''
-                   checksec --file=build/src/mosquitto \
-                       --output=json > "${RESULTS}/checksec.json" || true
-                   hardening-check build/src/mosquitto \
-> "${RESULTS}/hardening-check.txt" 2>&1 || true
-               '''
-           }
-           post {
-               always {
-                   archiveArtifacts artifacts: 'results/checksec.json,results/hardening-check.txt',
-                                    allowEmptyArchive: true
-               }
-           }
-       }
-   }
-   post {
-       success {
-           echo 'Pipeline OK'
-       }
-       failure {
-           echo 'Pipeline FALLIDO'
-       }
-       always {
-           echo "Artefactos: ${BUILD_URL}artifact/results/"
-       }
-   }
+    agent none
+
+    options {
+        skipDefaultCheckout(true)
+        disableConcurrentBuilds()
+        timestamps()
+    }
+
+    environment {
+        RESULTS = 'results'
+        EMBA_LOG_DIR = "/opt/devsecops-lab/emba-results/${JOB_NAME}/${BUILD_NUMBER}"
+        FUZZ_TIME = '60'
+    }
+
+    stages {
+        stage('Checkout') {
+            agent any
+            steps {
+                checkout scm
+                sh '''
+                    set -e
+                    mkdir -p "${RESULTS}"
+                '''
+            }
+        }
+
+        stage('Build') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    set -e
+
+                    cmake -S . -B build \
+                      -DCMAKE_C_COMPILER=clang \
+                      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                      -DDOCUMENTATION=OFF
+
+                    cmake --build build -j"$(nproc)"
+                    ls -lh build/src/mosquitto || true
+                '''
+            }
+        }
+
+        stage('Secrets Scan') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    gitleaks detect --source . \
+                        --report-format json \
+                        --report-path "${RESULTS}/gitleaks.json" \
+                        --no-git || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/gitleaks.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SAST - CodeQL') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    args '-v /opt/devsecops-lab/codeql:/opt/codeql:ro'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    set -e
+
+                    mkdir -p "${WORKSPACE}/.codeql-cache"
+                    rm -rf build-codeql build/codeql-db
+
+                    cmake -S . -B build-codeql \
+                      -DCMAKE_C_COMPILER=clang \
+                      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                      -DDOCUMENTATION=OFF
+
+                    /opt/codeql/codeql/codeql database create \
+                      build/codeql-db \
+                      --language=cpp \
+                      --source-root=. \
+                      --command="cmake --build build-codeql --clean-first -j$(nproc)" \
+                      --common-caches "${WORKSPACE}/.codeql-cache" \
+                      --overwrite
+
+                    /opt/codeql/codeql/codeql database analyze \
+                      build/codeql-db \
+                      /opt/codeql/codeql/qlpacks/codeql/cpp-queries/*/codeql-suites/cpp-security-and-quality.qls \
+                      --format sarif-latest \
+                      --output "${RESULTS}/codeql.sarif" \
+                      --common-caches "${WORKSPACE}/.codeql-cache" || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/codeql.sarif', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SAST - Coverity') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                }
+            }
+            steps {
+                withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
+                    sh '''
+                        set -e
+
+                        test -r "${COV_LICENSE}"
+
+                        cp "${COV_LICENSE}" "${WORKSPACE}/coverity-license.dat"
+                        chmod 600 "${WORKSPACE}/coverity-license.dat"
+
+                        mkdir -p "${WORKSPACE}/coverity-config"
+                        rm -f "${WORKSPACE}/coverity-config/coverity_config.xml"
+                        rm -rf build-coverity
+
+                        /opt/coverity/bin/cov-configure \
+                          --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
+                          --template \
+                          --compiler clang \
+                          --comptype clangcc
+
+                        cmake -S . -B build-coverity \
+                          -DCMAKE_C_COMPILER=clang \
+                          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                          -DDOCUMENTATION=OFF
+
+                        /opt/coverity/bin/cov-build \
+                          --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
+                          --dir build-coverity/cov-int \
+                          cmake --build build-coverity --clean-first -j"$(nproc)"
+
+                        /opt/coverity/bin/cov-analyze \
+                          --security-file "${WORKSPACE}/coverity-license.dat" \
+                          --dir build-coverity/cov-int \
+                          --all || true
+
+                        /opt/coverity/bin/cov-format-errors \
+                          --security-file "${WORKSPACE}/coverity-license.dat" \
+                          --dir build-coverity/cov-int \
+                          --json-output-v8 "${RESULTS}/coverity.json" || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/coverity.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Fuzzing - libFuzzer smoke') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    set -e
+
+                    cmake -S . -B build \
+                      -DCMAKE_C_COMPILER=clang \
+                      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                      -DDOCUMENTATION=OFF
+
+                    test -f config.h
+
+                    cd .lab/fuzzing
+                    python3 corpus/generate_corpus.py
+
+                    mkdir -p harnesses/stubs
+                    cat > harnesses/stubs/log_stub.c <<'EOF'
+#include <stdarg.h>
+#include "mosquitto.h"
+
+int log__printf(struct mosquitto *mosq, unsigned int priority, const char *fmt, ...)
+{
+    (void)mosq;
+    (void)priority;
+    (void)fmt;
+    return MOSQ_ERR_SUCCESS;
+}
+EOF
+
+                    mkdir -p build
+
+                    clang -fsanitize=fuzzer,address,undefined -g -O1 \
+                      -DWITH_BROKER -DWITH_BRIDGE -DWITH_TLS=0 -DWITH_THREADING \
+                      -I"${WORKSPACE}" \
+                      -I"${WORKSPACE}/deps" \
+                      -I"${WORKSPACE}/include" \
+                      -I"${WORKSPACE}/lib" \
+                      -I"${WORKSPACE}/src" \
+                      harnesses/fuzz_packet_parser.c \
+                      "${WORKSPACE}/lib/property_mosq.c" \
+                      "${WORKSPACE}/lib/packet_datatypes.c" \
+                      "${WORKSPACE}/lib/memory_mosq.c" \
+                      "${WORKSPACE}/lib/utf8_mosq.c" \
+                      harnesses/stubs/log_stub.c \
+                      -o build/fuzz_packet_parser_libfuzzer
+
+                    OUT="findings/libfuzzer/fuzz_packet_parser"
+                    mkdir -p "$OUT/corpus" "$OUT/crashes"
+                    cp -f corpus/mqtt/* "$OUT/corpus/" || true
+
+                    ./build/fuzz_packet_parser_libfuzzer \
+                        "$OUT/corpus" \
+                        -max_total_time="${FUZZ_TIME}" \
+                        -artifact_prefix="$OUT/crashes/" \
+                        -print_final_stats=1 \
+                        > "$OUT/run.log" 2>&1 || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: '.lab/fuzzing/build/*_libfuzzer,.lab/fuzzing/findings/libfuzzer/**',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SBOM') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    set -e
+
+                    mkdir -p "${WORKSPACE}/.cache"
+                    export XDG_CACHE_HOME="${WORKSPACE}/.cache"
+
+                    syft dir:. \
+                        --output cyclonedx-json="${RESULTS}/sbom.cyclonedx.json"
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/sbom.cyclonedx.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SCA - Grype') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    args '-v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
+                    export GRYPE_DB_AUTO_UPDATE=false
+
+                    grype sbom:${RESULTS}/sbom.cyclonedx.json \
+                        --output json \
+                        --file "${RESULTS}/grype.json" || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/grype.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('SCA - OWASP DC') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    args '-v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/opt/owaspdc-data-src:ro'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    set -e
+
+                    rm -rf /tmp/owaspdc-data
+                    mkdir -p /tmp/owaspdc-data
+                    cp -r /opt/owaspdc-data-src/. /tmp/owaspdc-data/
+
+                    /opt/dependency-check/bin/dependency-check.sh \
+                        --scan . \
+                        --format JSON \
+                        --out "${RESULTS}" \
+                        --data /tmp/owaspdc-data \
+                        --noupdate \
+                        --disableAssembly || true
+
+                    if [ -f "${RESULTS}/dependency-check-report.json" ]; then
+                        mv "${RESULTS}/dependency-check-report.json" "${RESULTS}/owaspdc.json"
+                    fi
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/owaspdc.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Firmware Analysis - EMBA') {
+            agent any
+            steps {
+                sh '''
+                    set -e
+
+                    mkdir -p "${EMBA_LOG_DIR}"
+                    rm -rf "${EMBA_LOG_DIR:?}"/*
+
+                    sudo -n /opt/emba/emba \
+                        -l "${EMBA_LOG_DIR}" \
+                        -f "${WORKSPACE}/build/src/mosquitto" \
+                        -p /opt/emba/scan-profiles/default-scan.emba \
+                        -y || true
+                '''
+            }
+            post {
+                always {
+                    sh '''
+                        mkdir -p "${RESULTS}/emba"
+                        if [ -d "${EMBA_LOG_DIR}" ]; then
+                            cp -r "${EMBA_LOG_DIR}/." "${RESULTS}/emba/" || true
+                        fi
+                    '''
+                    archiveArtifacts artifacts: 'results/emba/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Hardening') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                }
+            }
+            steps {
+                sh '''
+                    checksec --file=build/src/mosquitto \
+                        --output=json > "${RESULTS}/checksec.json" || true
+
+                    hardening-check build/src/mosquitto \
+                        > "${RESULTS}/hardening-check.txt" 2>&1 || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/checksec.json,results/hardening-check.txt',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline OK'
+        }
+        failure {
+            echo 'Pipeline FALLIDO'
+        }
+        always {
+            echo "Artefactos: ${BUILD_URL}artifact/results/"
+        }
+    }
 }
