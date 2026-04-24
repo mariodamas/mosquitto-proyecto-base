@@ -1,13 +1,24 @@
 pipeline {
     agent none
+
     options {
         timestamps()
         disableConcurrentBuilds()
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
+
+    parameters {
+        booleanParam(
+            name: 'RUN_COVERITY_MISRA',
+            defaultValue: false,
+            description: 'Ejecutar análisis MISRA C 2012 con Coverity. Recomendado solo bajo demanda por el alto volumen de hallazgos.'
+        )
+    }
+
     environment {
         RESULTS = 'results'
     }
+
     stages {
         stage('Checkout') {
             agent any
@@ -16,7 +27,9 @@ pipeline {
                 sh '''
                     set -e
                     rm -rf results build build-* build-coverity coverity-config .codeql-cache .cache .codeql-home .lab/fuzzing/findings || true
+
                     mkdir -p results/sast
+                    mkdir -p results/compliance
                     mkdir -p results/sca
                     mkdir -p results/fuzzing
                     mkdir -p results/emba
@@ -25,6 +38,7 @@ pipeline {
                 '''
             }
         }
+
         stage('Build') {
             agent {
                 docker {
@@ -41,11 +55,14 @@ pipeline {
                       -DCMAKE_CXX_COMPILER=clang++ \
                       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                       -DDOCUMENTATION=OFF
+
                     cmake --build build --clean-first -j"$(nproc)"
+
                     cp build/src/mosquitto results/build/
                 '''
             }
         }
+
         stage('Secrets Scan') {
             agent {
                 docker {
@@ -59,6 +76,7 @@ pipeline {
                     set -e
                     TMP_SRC="$(mktemp -d)"
                     trap 'rm -rf "$TMP_SRC"' EXIT
+
                     tar \
                       --exclude='./.git' \
                       --exclude='./.github' \
@@ -70,6 +88,7 @@ pipeline {
                       --exclude='./.codeql-cache' \
                       --exclude='./.lab/fuzzing/findings' \
                       -cf - . | tar -xf - -C "$TMP_SRC"
+
                     gitleaks detect \
                       --source "$TMP_SRC" \
                       --no-git \
@@ -79,6 +98,7 @@ pipeline {
                 '''
             }
         }
+
         stage('SAST - CodeQL') {
             agent {
                 docker {
@@ -92,18 +112,23 @@ pipeline {
                     set -e
                     export HOME="${WORKSPACE}/.codeql-home"
                     mkdir -p "${HOME}/.codeql"
+
                     rm -rf build-codeql build/codeql-db
+
                     cmake -S . -B build-codeql \
                       -DCMAKE_C_COMPILER=clang \
                       -DCMAKE_CXX_COMPILER=clang++ \
                       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                       -DDOCUMENTATION=OFF
+
                     /opt/codeql/codeql/codeql database create build/codeql-db \
                       --language=cpp \
                       --source-root=. \
                       --command="cmake --build build-codeql --clean-first -j$(nproc)"
+
                     CPP_SUITE="$(find /opt/codeql/codeql/qlpacks -path '*/codeql/cpp-queries/*/codeql-suites/cpp-security-and-quality.qls' | sort | tail -1)"
                     test -n "$CPP_SUITE"
+
                     /opt/codeql/codeql/codeql database analyze build/codeql-db \
                       "$CPP_SUITE" \
                       --format=sarif-latest \
@@ -111,6 +136,7 @@ pipeline {
                 '''
             }
         }
+
         stage('SAST - Coverity') {
             agent {
                 docker {
@@ -122,39 +148,156 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
                     sh '''
-                        set -e
+                        set -euo pipefail
+
+                        mkdir -p results/sast
+                        mkdir -p results/compliance
+
+                        test -f "${COV_LICENSE}"
                         test -r "${COV_LICENSE}"
+
                         cp "${COV_LICENSE}" "${WORKSPACE}/coverity-license.dat"
                         chmod 600 "${WORKSPACE}/coverity-license.dat"
+
+                        trap 'rm -f "${WORKSPACE}/coverity-license.dat"' EXIT
+
+                        test -f "${WORKSPACE}/coverity-license.dat"
+                        test -r "${WORKSPACE}/coverity-license.dat"
+
+                        CERT_CFG=/opt/coverity/config/coding-standards/cert-c/cert-c-all.config
+                        MISRA_CFG=/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config
+
+                        test -f "$CERT_CFG"
+
+                        if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+                          test -f "$MISRA_CFG"
+                        fi
+
                         mkdir -p "${WORKSPACE}/coverity-config"
+
                         rm -f "${WORKSPACE}/coverity-config/coverity_config.xml"
                         rm -rf build-coverity
+
+                        echo "=== Coverity configure ==="
                         /opt/coverity/bin/cov-configure \
                           --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
                           --template \
                           --compiler clang \
                           --comptype clangcc
+
+                        echo "=== CMake configure for Coverity ==="
                         cmake -S . -B build-coverity \
                           -DCMAKE_C_COMPILER=clang \
                           -DCMAKE_CXX_COMPILER=clang++ \
                           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                           -DDOCUMENTATION=OFF
+
+                        echo "=== Coverity build capture with complementary info ==="
                         /opt/coverity/bin/cov-build \
                           --config "${WORKSPACE}/coverity-config/coverity_config.xml" \
-                          --dir build-coverity/cov-int \
+                          --dir build-coverity/cov-int-base \
+                          --emit-complementary-info \
                           cmake --build build-coverity --clean-first -j"$(nproc)"
+
+                        test -d build-coverity/cov-int-base
+
+                        echo "=== Preparing independent Coverity intermediate directories ==="
+                        rm -rf build-coverity/cov-int-standard
+                        rm -rf build-coverity/cov-int-cert
+                        rm -rf build-coverity/cov-int-misra
+
+                        cp -a build-coverity/cov-int-base build-coverity/cov-int-standard
+                        cp -a build-coverity/cov-int-base build-coverity/cov-int-cert
+
+                        echo "=== Coverity standard analysis ==="
+                        /opt/coverity/bin/cov-manage-emit \
+                          --dir build-coverity/cov-int-standard \
+                          reset-host-name
+
                         /opt/coverity/bin/cov-analyze \
                           --security-file "${WORKSPACE}/coverity-license.dat" \
-                          --dir build-coverity/cov-int \
-                          --all
+                          --dir build-coverity/cov-int-standard \
+                          --all \
+                          2>&1 | tee results/sast/coverity-standard-analyze.log
+
                         /opt/coverity/bin/cov-format-errors \
                           --security-file "${WORKSPACE}/coverity-license.dat" \
-                          --dir build-coverity/cov-int \
-                          --json-output-v8 results/sast/coverity.json
+                          --dir build-coverity/cov-int-standard \
+                          --json-output-v8 results/sast/coverity-standard.json
+
+                        test -s results/sast/coverity-standard.json
+
+                        # Backward-compatible alias for existing consumers of results/sast/coverity.json
+                        cp results/sast/coverity-standard.json results/sast/coverity.json
+
+                        echo "=== Coverity CERT C compliance analysis ==="
+                        /opt/coverity/bin/cov-manage-emit \
+                          --dir build-coverity/cov-int-cert \
+                          reset-host-name
+
+                        /opt/coverity/bin/cov-analyze \
+                          --security-file "${WORKSPACE}/coverity-license.dat" \
+                          --dir build-coverity/cov-int-cert \
+                          --disable-default \
+                          --coding-standard-config "$CERT_CFG" \
+                          2>&1 | tee results/compliance/coverity-cert-analyze.log
+
+                        /opt/coverity/bin/cov-format-errors \
+                          --security-file "${WORKSPACE}/coverity-license.dat" \
+                          --dir build-coverity/cov-int-cert \
+                          --json-output-v8 results/compliance/coverity-cert.json
+
+                        test -s results/compliance/coverity-cert.json
+
+                        if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+                          echo "=== Coverity MISRA C 2012 compliance analysis ==="
+
+                          cp -a build-coverity/cov-int-base build-coverity/cov-int-misra
+
+                          /opt/coverity/bin/cov-manage-emit \
+                            --dir build-coverity/cov-int-misra \
+                            reset-host-name
+
+                          /opt/coverity/bin/cov-analyze \
+                            --security-file "${WORKSPACE}/coverity-license.dat" \
+                            --dir build-coverity/cov-int-misra \
+                            --disable-default \
+                            --coding-standard-config "$MISRA_CFG" \
+                            2>&1 | tee results/compliance/coverity-misra-analyze.log
+
+                          /opt/coverity/bin/cov-format-errors \
+                            --security-file "${WORKSPACE}/coverity-license.dat" \
+                            --dir build-coverity/cov-int-misra \
+                            --json-output-v8 results/compliance/coverity-misra.json
+
+                          test -s results/compliance/coverity-misra.json
+                        else
+                          echo "Coverity MISRA skipped. Enable RUN_COVERITY_MISRA=true to run it."
+                        fi
+
+                        echo "=== Validating Coverity JSON outputs ==="
+                        if command -v jq >/dev/null 2>&1; then
+                          jq empty results/sast/coverity-standard.json
+                          jq empty results/sast/coverity.json
+                          jq empty results/compliance/coverity-cert.json
+
+                          if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+                            jq empty results/compliance/coverity-misra.json
+                          fi
+                        else
+                          echo "jq not available in image; skipping JSON syntax validation."
+                        fi
+
+                        echo "=== Coverity artifacts ==="
+                        ls -lh results/sast/coverity*.json || true
+                        ls -lh results/sast/coverity*.log || true
+                        ls -lh results/compliance/coverity*.json || true
+                        ls -lh results/compliance/coverity*.log || true
                     '''
                 }
             }
         }
+
         stage('SBOM') {
             agent {
                 docker {
@@ -168,6 +311,7 @@ pipeline {
                     set -e
                     mkdir -p "${WORKSPACE}/.cache"
                     export XDG_CACHE_HOME="${WORKSPACE}/.cache"
+
                     syft . \
                       -o cyclonedx-json=results/sca/sbom-source.cyclonedx.json \
                       --exclude './.git/**' \
@@ -181,6 +325,7 @@ pipeline {
                 '''
             }
         }
+
         stage('SCA - Grype') {
             agent {
                 docker {
@@ -194,15 +339,18 @@ pipeline {
                     set -e
                     export GRYPE_DB_AUTO_UPDATE=false
                     export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
+
                     grype sbom:results/sca/sbom-source.cyclonedx.json \
                       --output json \
                       --file results/sca/grype-source.json || true
+
                     grype sbom:.lab/sca/vendor-manifest.cdx.json \
                       --output json \
                       --file results/sca/grype-vendor-manifest.json || true
                 '''
             }
         }
+
         stage('SCA - OWASP DC') {
             agent {
                 docker {
@@ -214,9 +362,11 @@ pipeline {
             steps {
                 sh '''
                     set -e
+
                     rm -rf /tmp/owaspdc-data
                     mkdir -p /tmp/owaspdc-data
                     cp -r /mnt/owaspdc-data/. /tmp/owaspdc-data/
+
                     /opt/dependency-check/bin/dependency-check.sh \
                       --project "mosquitto-devsecops-local" \
                       --scan . \
@@ -235,12 +385,14 @@ pipeline {
                       --noupdate \
                       --enableExperimental \
                       --disableAssembly || true
+
                     if [ -f results/sca/dependency-check-report.json ]; then
                       cp results/sca/dependency-check-report.json results/sca/owaspdc.json
                     fi
                 '''
             }
         }
+
         stage('Fuzzing - libFuzzer smoke') {
             agent {
                 docker {
@@ -252,20 +404,28 @@ pipeline {
             steps {
                 sh '''
                     set -e
+
                     rm -rf .lab/fuzzing/findings || true
+
                     cmake -S . -B build \
                       -DCMAKE_C_COMPILER=clang \
                       -DCMAKE_CXX_COMPILER=clang++ \
                       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
                       -DDOCUMENTATION=OFF
+
                     cd .lab/fuzzing
+
                     python3 corpus/generate_corpus.py
                     bash ./build_libfuzzer.sh
+
                     CAMPAIGN_TIME=60 bash ./run_campaigns.sh libfuzzer || true
+
                     mkdir -p "${WORKSPACE}/results/fuzzing"
+
                     if [ -d "${WORKSPACE}/.lab/fuzzing/findings" ]; then
                       cp -r "${WORKSPACE}/.lab/fuzzing/findings/." "${WORKSPACE}/results/fuzzing/" || true
                     fi
+
                     if [ -d "${WORKSPACE}/.lab/fuzzing/build" ]; then
                       mkdir -p "${WORKSPACE}/results/fuzzing/build"
                       cp -r "${WORKSPACE}/.lab/fuzzing/build/." "${WORKSPACE}/results/fuzzing/build/" || true
@@ -273,27 +433,29 @@ pipeline {
                 '''
             }
         }
-        // FIX #1 — EMBA: cd fuera de sudo; solo el binario se ejecuta con privilegios.
-        // Requiere en sudoers:
-        //   jenkins ALL=(ALL) NOPASSWD: /opt/emba/emba
-        //   jenkins ALL=(ALL) NOPASSWD: /bin/chown
+
         stage('Firmware Analysis - EMBA') {
             agent any
             steps {
                 sh '''
                     set -e
+
                     mkdir -p results/emba
                     rm -rf results/emba/*
+
                     cd /opt/emba
+
                     sudo -n ./emba \
                       -l "${WORKSPACE}/results/emba" \
                       -f "${WORKSPACE}/build/src/mosquitto" \
                       -p /opt/emba/scan-profiles/full-scan.emba \
                       -y || true
+
                     sudo -n chown -R "$(id -u):$(id -g)" "${WORKSPACE}/results/emba" || true
                 '''
             }
         }
+
         stage('Hardening') {
             agent {
                 docker {
@@ -310,7 +472,7 @@ pipeline {
             }
         }
     }
-    // FIX #2 — Post: node explícito requerido cuando pipeline-level agent es none.
+
     post {
         always {
             node('') {
@@ -318,9 +480,11 @@ pipeline {
                 echo "Artefactos: ${env.BUILD_URL}artifact/results/"
             }
         }
+
         success {
             echo 'Pipeline OK'
         }
+
         failure {
             echo 'Pipeline FALLIDO'
         }
