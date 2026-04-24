@@ -463,9 +463,56 @@ sudo -n chown -R "$(id -u):$(id -g)" "${WORKSPACE}/results/emba" || true
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-checksec --file=build/src/mosquitto --output=json > results/hardening/checksec.json
+mkdir -p results/hardening
 
-test -s results/hardening/checksec.json
+echo "=== Verificando hardening del build base ==="
+test -x build/src/mosquitto
+
+checksec \
+  --file=build/src/mosquitto \
+  --output=json \
+  > results/hardening/checksec-baseline.json
+
+echo "=== Compilando variante endurecida ==="
+rm -rf build-hardening
+
+cmake -S . -B build-hardening \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
+
+cmake --build build-hardening --clean-first -j"$(nproc)"
+
+test -x build-hardening/src/mosquitto
+
+cp build-hardening/src/mosquitto results/hardening/mosquitto-hardened
+
+echo "=== Verificando hardening del build endurecido ==="
+checksec \
+  --file=build-hardening/src/mosquitto \
+  --output=json \
+  > results/hardening/checksec-hardened.json
+
+test -s results/hardening/checksec-baseline.json
+test -s results/hardening/checksec-hardened.json
+
+if command -v jq >/dev/null 2>&1; then
+  jq empty results/hardening/checksec-baseline.json
+  jq empty results/hardening/checksec-hardened.json
+
+  echo "=== Baseline hardening ==="
+  jq '.' results/hardening/checksec-baseline.json
+
+  echo "=== Hardened hardening ==="
+  jq '.' results/hardening/checksec-hardened.json
+else
+  echo "jq not available in image; skipping JSON syntax validation."
+fi
 '''
             }
         }
