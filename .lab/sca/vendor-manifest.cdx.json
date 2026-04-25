@@ -1,31 +1,52 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.4",
-  "serialNumber": "urn:uuid:lab-vendor-manifest-mosquitto-v2.0.18",
-  "version": 1,
+  "serialNumber": "urn:uuid:b24efa61-bcc7-4116-86cb-727b2c207ca7",
+  "version": 2,
   "metadata": {
-    "timestamp": "2026-04-18T00:00:00Z",
-    "component": {
-      "type": "application",
-      "name": "eclipse-mosquitto",
-      "version": "2.0.18",
-      "purl": "pkg:github/eclipse/mosquitto@v2.0.18"
-    },
+    "timestamp": "2026-04-25T00:00:00Z",
     "tools": [
       {
+        "vendor": "mariodamas",
         "name": "lab-vendor-manifest",
-        "version": "1.0.0",
-        "description": "Hand-curated CycloneDX BOM fragment for vendored C/C++ dependencies that automated SBOM tools (Syft, Snyk --unmanaged) cannot detect from source alone. Components were identified by inspecting deps/, vendor/, and snap/snapcraft.yaml."
+        "version": "2.1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:github/mariodamas/mosquitto-proyecto-base@2.0.18",
+      "name": "mosquitto-proyecto-base",
+      "version": "2.0.18",
+      "purl": "pkg:github/mariodamas/mosquitto-proyecto-base@2.0.18",
+      "description": "DevSecOps lab fork of Eclipse Mosquitto 2.0.18. Upstream source is unmodified; the .lab/ tree adds controlled synthetic signals (secrets, vendored vulnerable dependency, fuzz harnesses) for a Jenkins-based C/C++ security pipeline."
+    },
+    "properties": [
+      {
+        "name": "devsecops:manifest-purpose",
+        "value": "curated-sca-inventory-with-validation-fixtures"
+      },
+      {
+        "name": "devsecops:timestamp-policy",
+        "value": "fixed-for-reproducible-lab-manifest"
       }
     ]
   },
   "components": [
     {
       "type": "library",
+      "bom-ref": "pkg:github/troydhanson/uthash@v2.1.0#uthash.h",
+      "author": "Troy D. Hanson",
       "name": "uthash",
       "version": "2.1.0",
-      "description": "Hash table for C structures, vendored as header-only in deps/uthash.h",
-      "purl": "pkg:github/troydhanson/uthash@v2.1.0",
+      "description": "Hash table macros for C structures. Vendored as a single header file in deps/uthash.h and included directly in the upstream Mosquitto build.",
+      "scope": "required",
+      "purl": "pkg:github/troydhanson/uthash@v2.1.0#uthash.h",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f0caac1577592c9276fc798eb8b6760209b2e6748a98195771ebfd902360e513"
+        }
+      ],
       "licenses": [
         {
           "license": {
@@ -37,25 +58,62 @@
         {
           "type": "vcs",
           "url": "https://github.com/troydhanson/uthash"
+        },
+        {
+          "type": "website",
+          "url": "https://troydhanson.github.io/uthash/"
         }
       ],
       "properties": [
         {
-          "name": "lab:vendored-path",
+          "name": "devsecops:component-role",
+          "value": "bundled-dependency"
+        },
+        {
+          "name": "devsecops:included-in-product-build",
+          "value": "true"
+        },
+        {
+          "name": "devsecops:vendored-path",
           "value": "deps/uthash.h"
         },
         {
-          "name": "lab:detection-method",
-          "value": "manual-inspection"
+          "name": "devsecops:detection-method",
+          "value": "manual-inspection:source-tree"
+        },
+        {
+          "name": "devsecops:source-of-version",
+          "value": "copyright-header-in-file"
+        },
+        {
+          "name": "devsecops:confidence",
+          "value": "high"
+        },
+        {
+          "name": "devsecops:review-required",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:hash-status",
+          "value": "calculated:deps/uthash.h"
         }
       ]
     },
     {
       "type": "library",
+      "bom-ref": "pkg:github/troydhanson/uthash@v2.1.0#utlist.h",
+      "author": "Troy D. Hanson",
       "name": "utlist",
       "version": "2.1.0",
-      "description": "Linked list macros for C, vendored as header-only in deps/utlist.h",
-      "purl": "pkg:github/troydhanson/uthash@v2.1.0",
+      "description": "Linked list macros for C. Co-distributed with uthash under the same repository and license. Vendored as a single header file in deps/utlist.h and included directly in the upstream Mosquitto build.",
+      "scope": "required",
+      "purl": "pkg:github/troydhanson/uthash@v2.1.0#utlist.h",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "60f6b6d30d6231ce8f93030f5701f1b0d83edbac9d0b6f5b646e575b74467bdd"
+        }
+      ],
       "licenses": [
         {
           "license": {
@@ -67,24 +125,55 @@
         {
           "type": "vcs",
           "url": "https://github.com/troydhanson/uthash"
+        },
+        {
+          "type": "website",
+          "url": "https://troydhanson.github.io/uthash/"
         }
       ],
       "properties": [
         {
-          "name": "lab:vendored-path",
+          "name": "devsecops:component-role",
+          "value": "bundled-dependency"
+        },
+        {
+          "name": "devsecops:included-in-product-build",
+          "value": "true"
+        },
+        {
+          "name": "devsecops:vendored-path",
           "value": "deps/utlist.h"
         },
         {
-          "name": "lab:detection-method",
-          "value": "manual-inspection"
+          "name": "devsecops:detection-method",
+          "value": "manual-inspection:source-tree"
+        },
+        {
+          "name": "devsecops:source-of-version",
+          "value": "copyright-header-in-file"
+        },
+        {
+          "name": "devsecops:confidence",
+          "value": "high"
+        },
+        {
+          "name": "devsecops:review-required",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:hash-status",
+          "value": "calculated:deps/utlist.h"
         }
       ]
     },
     {
       "type": "library",
+      "bom-ref": "pkg:github/DaveGamble/cJSON@v1.7.14",
+      "author": "Dave Gamble",
       "name": "cJSON",
       "version": "1.7.14",
-      "description": "Ultralightweight JSON parser in ANSI C, vendored in .lab/vendor/cjson-1.7.14/ and referenced in snap/snapcraft.yaml",
+      "description": "Ultralightweight JSON parser in ANSI C. Intentionally vendored at a known-vulnerable version in .lab/vendor/cjson-1.7.14/ to serve as a controlled SCA detection target. This copy is NOT compiled into the product binary; it exists solely as a lab fixture to validate pipeline detection capability.",
+      "scope": "optional",
       "purl": "pkg:github/DaveGamble/cJSON@v1.7.14",
       "licenses": [
         {
@@ -101,29 +190,70 @@
         {
           "type": "distribution",
           "url": "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.14.tar.gz"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/DaveGamble/cJSON#readme"
         }
       ],
       "properties": [
         {
-          "name": "lab:vendored-path",
+          "name": "devsecops:component-role",
+          "value": "sca-validation-fixture"
+        },
+        {
+          "name": "devsecops:included-in-product-build",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:vendored-path",
           "value": ".lab/vendor/cjson-1.7.14/"
         },
         {
-          "name": "lab:detection-method",
-          "value": "manual-inspection"
+          "name": "devsecops:detection-method",
+          "value": "manual-inspection:lab-vendor-directory"
         },
         {
-          "name": "lab:purpose",
-          "value": "sca-signal-validation — intentionally vendored vulnerable version to validate SCA detection capability"
+          "name": "devsecops:source-of-version",
+          "value": "directory-name+upstream-release-tag"
+        },
+        {
+          "name": "devsecops:confidence",
+          "value": "high"
+        },
+        {
+          "name": "devsecops:review-required",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:hash-status",
+          "value": "calculated:individual-files"
+        },
+        {
+          "name": "devsecops:file-hash:cJSON.h",
+          "value": "sha256:1037363170f189d3aeb4a14161b6d25999d89b69248b76aeb292deb2f41db3ed"
+        },
+        {
+          "name": "devsecops:file-hash:cJSON.c",
+          "value": "sha256:a981dadfbdfc8217bfe8663a584a4cdf404306b7dcaf71158dbe7da0499275f0"
         }
       ]
     },
     {
       "type": "library",
+      "bom-ref": "pkg:github/warmcat/libwebsockets@v2.4.2",
+      "author": "Andy Green",
       "name": "libwebsockets",
       "version": "2.4.2",
-      "description": "C WebSockets library. Version 2.4.2 is pinned in snap/snapcraft.yaml for the Mosquitto Snap package build.",
+      "description": "C WebSockets and HTTP library. Version 2.4.2 is pinned in snap/snapcraft.yaml for the Mosquitto Snap build. A header stub is stored in .lab/vendor/libwebsockets-2.4.2/ to enable SCA scanning without performing a full snap build. NOT included in the standard CMake/Makefile product binary.",
+      "scope": "optional",
       "purl": "pkg:github/warmcat/libwebsockets@v2.4.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "e85eef402218b69baca36b0c7f9312e26eba207c9986bdcd25451c27e1a09b12"
+        }
+      ],
       "licenses": [
         {
           "license": {
@@ -139,22 +269,67 @@
         {
           "type": "distribution",
           "url": "https://github.com/warmcat/libwebsockets/archive/v2.4.2.tar.gz"
+        },
+        {
+          "type": "website",
+          "url": "https://libwebsockets.org/"
         }
       ],
       "properties": [
         {
-          "name": "lab:vendored-path",
+          "name": "devsecops:component-role",
+          "value": "optional-dependency"
+        },
+        {
+          "name": "devsecops:included-in-product-build",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:vendored-path",
           "value": ".lab/vendor/libwebsockets-2.4.2/"
         },
         {
-          "name": "lab:detection-method",
-          "value": "manual-inspection + snap/snapcraft.yaml"
+          "name": "devsecops:detection-method",
+          "value": "manual-inspection:snap-snapcraft-yaml"
         },
         {
-          "name": "lab:purpose",
-          "value": "sca-signal-validation — old version pinned by upstream Snap build, included as second SCA detection target"
+          "name": "devsecops:source-of-version",
+          "value": "snap/snapcraft.yaml:source-url"
+        },
+        {
+          "name": "devsecops:confidence",
+          "value": "high"
+        },
+        {
+          "name": "devsecops:review-required",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:hash-status",
+          "value": "calculated:local-header-stub-not-full-upstream-source"
+        },
+        {
+          "name": "devsecops:fixture-limitation",
+          "value": "local fixture is a header stub and does not represent the full upstream libwebsockets source tree; hash verifies fixture integrity only"
         }
       ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:github/mariodamas/mosquitto-proyecto-base@2.0.18",
+      "dependsOn": [
+        "pkg:github/troydhanson/uthash@v2.1.0#uthash.h",
+        "pkg:github/troydhanson/uthash@v2.1.0#utlist.h"
+      ]
+    },
+    {
+      "ref": "pkg:github/DaveGamble/cJSON@v1.7.14",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:github/warmcat/libwebsockets@v2.4.2",
+      "dependsOn": []
     }
   ]
 }
