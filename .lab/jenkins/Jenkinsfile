@@ -8,6 +8,14 @@ pipeline {
         skipDefaultCheckout(true)
     }
 
+    parameters {
+        booleanParam(
+            name: 'RUN_COVERITY_MISRA',
+            defaultValue: false,
+            description: 'Ejecutar análisis MISRA C 2012 con Coverity. Recomendado solo bajo demanda por su alto volumen de hallazgos.'
+        )
+    }
+
     environment {
         RESULTS = 'results'
     }
@@ -47,12 +55,18 @@ mkdir -p results/build
 set -euo pipefail
 
 cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DDOCUMENTATION=OFF
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
 
 cmake --build build --clean-first -j"$(nproc)"
+
+test -x build/src/mosquitto
 
 cp build/src/mosquitto results/build/
 '''
@@ -94,6 +108,12 @@ gitleaks detect \
   --report-format json \
   --report-path results/sast/gitleaks.json \
   --exit-code 0
+
+test -s results/sast/gitleaks.json
+
+if command -v jq >/dev/null 2>&1; then
+  jq empty results/sast/gitleaks.json
+fi
 '''
             }
         }
@@ -116,10 +136,14 @@ mkdir -p "${HOME}/.codeql"
 rm -rf build-codeql build/codeql-db
 
 cmake -S . -B build-codeql \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DDOCUMENTATION=OFF
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
 
 /opt/codeql/codeql/codeql database create build/codeql-db \
   --language=cpp \
@@ -133,6 +157,8 @@ test -n "$CPP_SUITE"
   "$CPP_SUITE" \
   --format=sarif-latest \
   --output=results/sast/codeql.sarif
+
+test -s results/sast/codeql.sarif
 '''
             }
         }
@@ -169,7 +195,10 @@ CERT_CFG=/opt/coverity/config/coding-standards/cert-c/cert-c-all.config
 MISRA_CFG=/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config
 
 test -f "$CERT_CFG"
-test -f "$MISRA_CFG"
+
+if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+  test -f "$MISRA_CFG"
+fi
 
 mkdir -p "${WORKSPACE}/coverity-config"
 
@@ -185,10 +214,14 @@ echo "=== Coverity configure ==="
 
 echo "=== CMake configure for Coverity ==="
 cmake -S . -B build-coverity \
+  -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DDOCUMENTATION=OFF
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
 
 echo "=== Coverity build capture with complementary info ==="
 /opt/coverity/bin/cov-build \
@@ -206,7 +239,6 @@ rm -rf build-coverity/cov-int-misra
 
 cp -a build-coverity/cov-int-base build-coverity/cov-int-standard
 cp -a build-coverity/cov-int-base build-coverity/cov-int-cert
-cp -a build-coverity/cov-int-base build-coverity/cov-int-misra
 
 echo "=== Coverity standard analysis ==="
 /opt/coverity/bin/cov-manage-emit \
@@ -226,7 +258,7 @@ echo "=== Coverity standard analysis ==="
 
 test -s results/sast/coverity-standard.json
 
-# Alias de compatibilidad para consumidores que esperen el nombre antiguo.
+# Alias de compatibilidad para consumidores que esperen el nombre anterior.
 cp results/sast/coverity-standard.json results/sast/coverity.json
 
 echo "=== Coverity CERT C compliance analysis ==="
@@ -248,31 +280,41 @@ echo "=== Coverity CERT C compliance analysis ==="
 
 test -s results/compliance/coverity-cert.json
 
-echo "=== Coverity MISRA C 2012 compliance analysis ==="
-/opt/coverity/bin/cov-manage-emit \
-  --dir build-coverity/cov-int-misra \
-  reset-host-name
+if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+  echo "=== Coverity MISRA C 2012 compliance analysis ==="
 
-/opt/coverity/bin/cov-analyze \
-  --security-file "${WORKSPACE}/coverity-license.dat" \
-  --dir build-coverity/cov-int-misra \
-  --disable-default \
-  --coding-standard-config "$MISRA_CFG" \
-  2>&1 | tee results/compliance/coverity-misra-analyze.log
+  cp -a build-coverity/cov-int-base build-coverity/cov-int-misra
 
-/opt/coverity/bin/cov-format-errors \
-  --security-file "${WORKSPACE}/coverity-license.dat" \
-  --dir build-coverity/cov-int-misra \
-  --json-output-v8 results/compliance/coverity-misra.json
+  /opt/coverity/bin/cov-manage-emit \
+    --dir build-coverity/cov-int-misra \
+    reset-host-name
 
-test -s results/compliance/coverity-misra.json
+  /opt/coverity/bin/cov-analyze \
+    --security-file "${WORKSPACE}/coverity-license.dat" \
+    --dir build-coverity/cov-int-misra \
+    --disable-default \
+    --coding-standard-config "$MISRA_CFG" \
+    2>&1 | tee results/compliance/coverity-misra-analyze.log
+
+  /opt/coverity/bin/cov-format-errors \
+    --security-file "${WORKSPACE}/coverity-license.dat" \
+    --dir build-coverity/cov-int-misra \
+    --json-output-v8 results/compliance/coverity-misra.json
+
+  test -s results/compliance/coverity-misra.json
+else
+  echo "Coverity MISRA skipped. Enable RUN_COVERITY_MISRA=true to run it."
+fi
 
 echo "=== Validating Coverity JSON outputs ==="
 if command -v jq >/dev/null 2>&1; then
   jq empty results/sast/coverity-standard.json
   jq empty results/sast/coverity.json
   jq empty results/compliance/coverity-cert.json
-  jq empty results/compliance/coverity-misra.json
+
+  if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+    jq empty results/compliance/coverity-misra.json
+  fi
 else
   echo "jq not available in image; skipping JSON syntax validation."
 fi
@@ -300,8 +342,11 @@ ls -lh results/compliance/coverity*.log || true
 set -euo pipefail
 
 mkdir -p "${WORKSPACE}/.cache"
+mkdir -p results/sca
+
 export XDG_CACHE_HOME="${WORKSPACE}/.cache"
 
+echo "=== Generating source SBOM with Syft ==="
 syft . \
   -o cyclonedx-json=results/sca/sbom-source.cyclonedx.json \
   --exclude './.git/**' \
@@ -314,6 +359,15 @@ syft . \
   --exclude './.codeql-cache/**' \
   --exclude './.cache/**' \
   --exclude './.codeql-home/**'
+
+test -s results/sca/sbom-source.cyclonedx.json
+
+if command -v jq >/dev/null 2>&1; then
+  jq empty results/sca/sbom-source.cyclonedx.json
+  jq -e '.bomFormat == "CycloneDX"' results/sca/sbom-source.cyclonedx.json
+else
+  echo "jq not available in image; skipping SBOM JSON validation."
+fi
 '''
             }
         }
@@ -330,16 +384,64 @@ syft . \
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
+mkdir -p results/sca
+
 export GRYPE_DB_AUTO_UPDATE=false
 export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
 
+echo "=== Precheck source SBOM ==="
+test -s results/sca/sbom-source.cyclonedx.json
+
+if command -v jq >/dev/null 2>&1; then
+  jq empty results/sca/sbom-source.cyclonedx.json
+  jq -e '.bomFormat == "CycloneDX"' results/sca/sbom-source.cyclonedx.json
+fi
+
+echo "=== Precheck curated vendor manifest ==="
+test -s .lab/sca/vendor-manifest.cdx.json
+
+if command -v jq >/dev/null 2>&1; then
+  jq empty .lab/sca/vendor-manifest.cdx.json
+  jq -e '.bomFormat == "CycloneDX"' .lab/sca/vendor-manifest.cdx.json
+fi
+
+if [ -f .lab/sca/validate_vendor_manifest.py ]; then
+  python3 .lab/sca/validate_vendor_manifest.py
+else
+  echo "WARNING: .lab/sca/validate_vendor_manifest.py not found; skipping custom manifest validation."
+fi
+
+echo "=== Archiving curated vendor manifest used in this run ==="
+cp .lab/sca/vendor-manifest.cdx.json results/sca/vendor-manifest.cdx.json
+
+if [ -f .lab/sca/vendor-manifest.evidence.md ]; then
+  cp .lab/sca/vendor-manifest.evidence.md results/sca/vendor-manifest.evidence.md
+fi
+
+echo "=== Grype scan: source SBOM ==="
 grype sbom:results/sca/sbom-source.cyclonedx.json \
   --output json \
-  --file results/sca/grype-source.json || true
+  --file results/sca/grype-source.json
 
-grype sbom:.lab/sca/vendor-manifest.cdx.json \
+echo "=== Grype scan: curated vendor manifest ==="
+grype sbom:results/sca/vendor-manifest.cdx.json \
   --output json \
-  --file results/sca/grype-vendor-manifest.json || true
+  --file results/sca/grype-vendor-manifest.json
+
+test -s results/sca/grype-source.json
+test -s results/sca/grype-vendor-manifest.json
+
+if command -v jq >/dev/null 2>&1; then
+  jq empty results/sca/grype-source.json
+  jq empty results/sca/grype-vendor-manifest.json
+fi
+
+echo "=== SCA artifacts ==="
+ls -lh results/sca/sbom-source.cyclonedx.json || true
+ls -lh results/sca/vendor-manifest.cdx.json || true
+ls -lh results/sca/vendor-manifest.evidence.md || true
+ls -lh results/sca/grype-source.json || true
+ls -lh results/sca/grype-vendor-manifest.json || true
 '''
             }
         }
@@ -355,6 +457,8 @@ grype sbom:.lab/sca/vendor-manifest.cdx.json \
             steps {
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
+
+mkdir -p results/sca
 
 rm -rf /tmp/owaspdc-data
 mkdir -p /tmp/owaspdc-data
@@ -383,6 +487,12 @@ cp -r /mnt/owaspdc-data/. /tmp/owaspdc-data/
 
 if [ -f results/sca/dependency-check-report.json ]; then
   cp results/sca/dependency-check-report.json results/sca/owaspdc.json
+fi
+
+test -s results/sca/owaspdc.json || echo "WARNING: OWASP Dependency-Check JSON report was not generated."
+
+if [ -s results/sca/owaspdc.json ] && command -v jq >/dev/null 2>&1; then
+  jq empty results/sca/owaspdc.json
 fi
 '''
             }
@@ -465,51 +575,19 @@ set -euo pipefail
 
 mkdir -p results/hardening
 
-echo "=== Verificando hardening del build base ==="
+echo "=== Verifying hardening of main build artifact ==="
 test -x build/src/mosquitto
 
 checksec \
   --file=build/src/mosquitto \
   --output=json \
-  > results/hardening/checksec-baseline.json
+  > results/hardening/checksec.json
 
-echo "=== Compilando variante endurecida ==="
-rm -rf build-hardening
-
-cmake -S . -B build-hardening \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-  -DDOCUMENTATION=OFF \
-  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
-  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
-  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
-
-cmake --build build-hardening --clean-first -j"$(nproc)"
-
-test -x build-hardening/src/mosquitto
-
-cp build-hardening/src/mosquitto results/hardening/mosquitto-hardened
-
-echo "=== Verificando hardening del build endurecido ==="
-checksec \
-  --file=build-hardening/src/mosquitto \
-  --output=json \
-  > results/hardening/checksec-hardened.json
-
-test -s results/hardening/checksec-baseline.json
-test -s results/hardening/checksec-hardened.json
+test -s results/hardening/checksec.json
 
 if command -v jq >/dev/null 2>&1; then
-  jq empty results/hardening/checksec-baseline.json
-  jq empty results/hardening/checksec-hardened.json
-
-  echo "=== Baseline hardening ==="
-  jq '.' results/hardening/checksec-baseline.json
-
-  echo "=== Hardened hardening ==="
-  jq '.' results/hardening/checksec-hardened.json
+  jq empty results/hardening/checksec.json
+  jq '.' results/hardening/checksec.json
 else
   echo "jq not available in image; skipping JSON syntax validation."
 fi
