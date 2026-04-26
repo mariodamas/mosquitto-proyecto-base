@@ -17,10 +17,12 @@ MANIFEST_PATH = os.path.join(
     os.path.dirname(__file__), "vendor-manifest.cdx.json"
 )
 
-REQUIRED_COMPONENT_FIELDS = ("bom-ref", "name", "version", "purl", "properties")
+REQUIRED_COMPONENT_FIELDS = ("bom-ref", "name", "version", "properties")
 REQUIRED_PROPERTY_ROLE = "devsecops:component-role"
 REQUIRED_PROPERTY_INCLUDED = "devsecops:included-in-product-build"
 VALID_ROLES = {"bundled-dependency", "optional-dependency", "sca-validation-fixture"}
+FIXTURE_ROLE = "sca-validation-fixture"
+ROOT_BOM_REF = "pkg:github/mariodamas/mosquitto-proyecto-base@2.0.18"
 
 errors = []
 warnings = []
@@ -112,6 +114,8 @@ else:
     print(f"  OK  {len(components)} component(s) declared")
 
 bom_refs_seen = {}
+fixture_bom_refs = set()
+
 for idx, comp in enumerate(components):
     label = comp.get("name", f"components[{idx}]")
     comp_ok = True
@@ -121,6 +125,18 @@ for idx, comp in enumerate(components):
             fail(f"Component '{label}': missing or empty field '{field}'")
             print(f"  ERR [{label}] missing field: {field}")
             comp_ok = False
+
+    # Require purl OR cpe — at least one machine-readable identifier
+    has_purl = bool(comp.get("purl"))
+    has_cpe = bool(comp.get("cpe"))
+    if has_purl:
+        print(f"  OK  [{label}] purl = {comp['purl']}")
+    if has_cpe:
+        print(f"  OK  [{label}] cpe  = {comp['cpe']}")
+    if not has_purl and not has_cpe:
+        fail(f"Component '{label}': must have at least one of 'purl' or 'cpe'")
+        print(f"  ERR [{label}] missing both purl and cpe")
+        comp_ok = False
 
     bom_ref = comp.get("bom-ref", "")
     if bom_ref:
@@ -137,6 +153,7 @@ for idx, comp in enumerate(components):
     props = comp.get("properties", [])
     prop_names = [p.get("name", "") for p in props]
 
+    role_value = None
     has_role = any(n == REQUIRED_PROPERTY_ROLE for n in prop_names)
     if not has_role:
         fail(f"Component '{label}': missing property '{REQUIRED_PROPERTY_ROLE}'")
@@ -156,6 +173,7 @@ for idx, comp in enumerate(components):
         else:
             print(f"  OK  [{label}] role = {role_value}")
 
+    included_value = None
     has_included = any(n == REQUIRED_PROPERTY_INCLUDED for n in prop_names)
     if not has_included:
         fail(
@@ -184,6 +202,22 @@ for idx, comp in enumerate(components):
                 f"  OK  [{label}] included-in-product-build = {included_value}"
             )
 
+    # Fixture-specific rule: sca-validation-fixture must not be in the product build
+    if role_value == FIXTURE_ROLE:
+        if included_value is not None and included_value != "false":
+            fail(
+                f"Component '{label}': role is '{FIXTURE_ROLE}' but "
+                f"'{REQUIRED_PROPERTY_INCLUDED}' = {included_value!r} (must be 'false')"
+            )
+            print(
+                f"  ERR [{label}] fixture must have included-in-product-build = false"
+            )
+            comp_ok = False
+        elif included_value == "false":
+            print(f"  OK  [{label}] fixture correctly excluded from product build")
+        if bom_ref:
+            fixture_bom_refs.add(bom_ref)
+
     if comp_ok:
         print(f"  OK  [{label}] all required fields present")
 
@@ -195,6 +229,7 @@ all_bom_refs = set(bom_refs_seen.keys())
 if meta_comp and meta_comp.get("bom-ref"):
     all_bom_refs.add(meta_comp["bom-ref"])
 
+root_depends_on = []
 dependencies = bom.get("dependencies", [])
 if not dependencies:
     warn("No 'dependencies' section found — consider adding one for traceability")
@@ -210,6 +245,8 @@ else:
             print(f"  ERR ref not found: {ref!r}")
         else:
             print(f"  OK  ref {ref!r} resolved")
+            if ref == ROOT_BOM_REF:
+                root_depends_on = dep.get("dependsOn", [])
 
         for depends_on_ref in dep.get("dependsOn", []):
             if depends_on_ref not in all_bom_refs:
@@ -221,11 +258,33 @@ else:
             else:
                 print(f"  OK  dependsOn {depends_on_ref!r} resolved")
 
+# ── 6. Fixture dependency integrity ──────────────────────────────────────────
+
+section("6. Fixture dependency integrity")
+
+if not fixture_bom_refs:
+    print("  OK  No fixture components declared (nothing to check)")
+else:
+    print(f"  OK  {len(fixture_bom_refs)} fixture bom-ref(s) identified")
+    contaminated = [r for r in root_depends_on if r in fixture_bom_refs]
+    if contaminated:
+        for ref in contaminated:
+            fail(
+                f"Root component dependsOn includes SCA fixture {ref!r}. "
+                "Fixtures must not appear as product dependencies."
+            )
+            print(f"  ERR root component incorrectly depends on fixture: {ref!r}")
+    else:
+        print(
+            "  OK  Root component dependsOn does not include any fixture bom-ref"
+        )
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 section("SUMMARY")
 
 print(f"  Components declared : {len(components)}")
+print(f"  Fixture components  : {len(fixture_bom_refs)}")
 print(f"  Errors              : {len(errors)}")
 print(f"  Warnings            : {len(warnings)}")
 

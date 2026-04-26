@@ -2,14 +2,14 @@
   "bomFormat": "CycloneDX",
   "specVersion": "1.4",
   "serialNumber": "urn:uuid:b24efa61-bcc7-4116-86cb-727b2c207ca7",
-  "version": 2,
+  "version": 3,
   "metadata": {
     "timestamp": "2026-04-25T00:00:00Z",
     "tools": [
       {
         "vendor": "mariodamas",
         "name": "lab-vendor-manifest",
-        "version": "2.1.0"
+        "version": "2.2.0"
       }
     ],
     "component": {
@@ -28,6 +28,10 @@
       {
         "name": "devsecops:timestamp-policy",
         "value": "fixed-for-reproducible-lab-manifest"
+      },
+      {
+        "name": "devsecops:sca-validation-policy",
+        "value": "validation fixtures are not product dependencies and must not be attributed to the Mosquitto runtime artifact"
       }
     ]
   },
@@ -175,6 +179,7 @@
       "description": "Ultralightweight JSON parser in ANSI C. Intentionally vendored at a known-vulnerable version in .lab/vendor/cjson-1.7.14/ to serve as a controlled SCA detection target. This copy is NOT compiled into the product binary; it exists solely as a lab fixture to validate pipeline detection capability.",
       "scope": "optional",
       "purl": "pkg:github/DaveGamble/cJSON@v1.7.14",
+      "cpe": "cpe:2.3:a:cjson_project:cjson:1.7.14:*:*:*:*:*:*:*",
       "licenses": [
         {
           "license": {
@@ -236,6 +241,14 @@
         {
           "name": "devsecops:file-hash:cJSON.c",
           "value": "sha256:a981dadfbdfc8217bfe8663a584a4cdf404306b7dcaf71158dbe7da0499275f0"
+        },
+        {
+          "name": "devsecops:fixture-limitation",
+          "value": "This fixture is not part of the Mosquitto product build and must not be interpreted as a runtime dependency."
+        },
+        {
+          "name": "devsecops:empirical-grype-result",
+          "value": "cJSON 1.7.14 requires CPE cjson_project:cjson to match CVE-2023-53154; PURL-only matching produced 0 results."
         }
       ]
     },
@@ -310,7 +323,130 @@
         },
         {
           "name": "devsecops:fixture-limitation",
-          "value": "local fixture is a header stub and does not represent the full upstream libwebsockets source tree; hash verifies fixture integrity only"
+          "value": "This component is retained as an optional repository/build reference, not as a guaranteed vulnerability detection fixture."
+        },
+        {
+          "name": "devsecops:empirical-grype-result",
+          "value": "No matches found for tested libwebsockets PURL/CPE/version combinations with the local Grype DB."
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/zlib@1.2.11#sca-validation-fixture",
+      "name": "zlib",
+      "version": "1.2.11",
+      "description": "General-purpose lossless data-compression library. Declared at version 1.2.11 as a controlled SCA detection target to validate pipeline vulnerability detection capability. NOT compiled into the Mosquitto product binary. No physical files are vendored in the repository.",
+      "scope": "optional",
+      "purl": "pkg:generic/zlib@1.2.11",
+      "cpe": "cpe:2.3:a:zlib:zlib:1.2.11:*:*:*:*:*:*:*",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/madler/zlib"
+        },
+        {
+          "type": "website",
+          "url": "https://zlib.net/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "devsecops:component-role",
+          "value": "sca-validation-fixture"
+        },
+        {
+          "name": "devsecops:included-in-product-build",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:detection-method",
+          "value": "manual-sca-fixture"
+        },
+        {
+          "name": "devsecops:source-of-version",
+          "value": "selected-from-empirical-grype-positive-control"
+        },
+        {
+          "name": "devsecops:confidence",
+          "value": "high"
+        },
+        {
+          "name": "devsecops:review-required",
+          "value": "true"
+        },
+        {
+          "name": "devsecops:fixture-limitation",
+          "value": "This fixture is not part of the Mosquitto product build and must not be interpreted as a runtime dependency."
+        },
+        {
+          "name": "devsecops:expected-grype-result",
+          "value": "expected to produce vulnerability matches with local Grype DB; observed positive-control result was 3 matches."
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:generic/sqlite@3.39.1#sca-validation-fixture",
+      "name": "sqlite",
+      "version": "3.39.1",
+      "description": "Embedded relational database engine. Declared at version 3.39.1 as a controlled SCA detection target to validate pipeline vulnerability detection capability. NOT compiled into the Mosquitto product binary. No physical files are vendored in the repository.",
+      "scope": "optional",
+      "purl": "pkg:generic/sqlite@3.39.1",
+      "cpe": "cpe:2.3:a:sqlite:sqlite:3.39.1:*:*:*:*:*:*:*",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/sqlite/sqlite"
+        },
+        {
+          "type": "website",
+          "url": "https://sqlite.org/"
+        }
+      ],
+      "properties": [
+        {
+          "name": "devsecops:component-role",
+          "value": "sca-validation-fixture"
+        },
+        {
+          "name": "devsecops:included-in-product-build",
+          "value": "false"
+        },
+        {
+          "name": "devsecops:detection-method",
+          "value": "manual-sca-fixture"
+        },
+        {
+          "name": "devsecops:source-of-version",
+          "value": "selected-from-empirical-grype-positive-control"
+        },
+        {
+          "name": "devsecops:confidence",
+          "value": "high"
+        },
+        {
+          "name": "devsecops:review-required",
+          "value": "true"
+        },
+        {
+          "name": "devsecops:license-review-required",
+          "value": "true"
+        },
+        {
+          "name": "devsecops:fixture-limitation",
+          "value": "This fixture is not part of the Mosquitto product build and must not be interpreted as a runtime dependency."
+        },
+        {
+          "name": "devsecops:expected-grype-result",
+          "value": "expected to produce vulnerability matches with local Grype DB; observed positive-control result was 14 matches."
         }
       ]
     }
@@ -329,6 +465,14 @@
     },
     {
       "ref": "pkg:github/warmcat/libwebsockets@v2.4.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:generic/zlib@1.2.11#sca-validation-fixture",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:generic/sqlite@3.39.1#sca-validation-fixture",
       "dependsOn": []
     }
   ]
