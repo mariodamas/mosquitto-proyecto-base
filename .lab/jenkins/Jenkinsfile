@@ -14,6 +14,12 @@ pipeline {
             defaultValue: false,
             description: 'Ejecutar análisis MISRA C 2012 con Coverity. Recomendado solo bajo demanda por su alto volumen de hallazgos.'
         )
+
+        booleanParam(
+            name: 'RUN_EMBA_ROOTFS',
+            defaultValue: true,
+            description: 'Construir un rootfs mínimo de laboratorio y ejecutar EMBA sobre ese artefacto en lugar de solo sobre el ELF.'
+        )
     }
 
     environment {
@@ -36,6 +42,7 @@ mkdir -p results/compliance
 mkdir -p results/sca
 mkdir -p results/fuzzing
 mkdir -p results/emba
+mkdir -p results/firmware
 mkdir -p results/hardening
 mkdir -p results/build
 '''
@@ -111,9 +118,14 @@ gitleaks detect \
 
 test -s results/sast/gitleaks.json
 
-if command -v jq >/dev/null 2>&1; then
-  jq empty results/sast/gitleaks.json
-fi
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/sast/gitleaks.json")
+json.loads(path.read_text(encoding="utf-8"))
+print(f"[OK] JSON válido: {path}")
+PY
 '''
             }
         }
@@ -159,6 +171,15 @@ test -n "$CPP_SUITE"
   --output=results/sast/codeql.sarif
 
 test -s results/sast/codeql.sarif
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/sast/codeql.sarif")
+json.loads(path.read_text(encoding="utf-8"))
+print(f"[OK] JSON/SARIF válido: {path}")
+PY
 '''
             }
         }
@@ -258,7 +279,7 @@ echo "=== Coverity standard analysis ==="
 
 test -s results/sast/coverity-standard.json
 
-# Alias de compatibilidad para consumidores que esperen el nombre anterior.
+# Alias de compatibilidad para consumidores antiguos.
 cp results/sast/coverity-standard.json results/sast/coverity.json
 
 echo "=== Coverity CERT C compliance analysis ==="
@@ -306,18 +327,25 @@ else
   echo "Coverity MISRA skipped. Enable RUN_COVERITY_MISRA=true to run it."
 fi
 
-echo "=== Validating Coverity JSON outputs ==="
-if command -v jq >/dev/null 2>&1; then
-  jq empty results/sast/coverity-standard.json
-  jq empty results/sast/coverity.json
-  jq empty results/compliance/coverity-cert.json
+echo "=== Validating Coverity JSON outputs with Python ==="
+python3 - <<'PY'
+import json
+from pathlib import Path
 
-  if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
-    jq empty results/compliance/coverity-misra.json
-  fi
-else
-  echo "jq not available in image; skipping JSON syntax validation."
-fi
+paths = [
+    Path("results/sast/coverity-standard.json"),
+    Path("results/sast/coverity.json"),
+    Path("results/compliance/coverity-cert.json"),
+]
+
+misra = Path("results/compliance/coverity-misra.json")
+if misra.exists():
+    paths.append(misra)
+
+for path in paths:
+    json.loads(path.read_text(encoding="utf-8"))
+    print(f"[OK] JSON válido: {path}")
+PY
 
 echo "=== Coverity artifacts ==="
 ls -lh results/sast/coverity*.json || true
@@ -362,12 +390,19 @@ syft . \
 
 test -s results/sca/sbom-source.cyclonedx.json
 
-if command -v jq >/dev/null 2>&1; then
-  jq empty results/sca/sbom-source.cyclonedx.json
-  jq -e '.bomFormat == "CycloneDX"' results/sca/sbom-source.cyclonedx.json
-else
-  echo "jq not available in image; skipping SBOM JSON validation."
-fi
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/sca/sbom-source.cyclonedx.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+if data.get("bomFormat") != "CycloneDX":
+    raise SystemExit("SBOM no es CycloneDX")
+
+print(f"[OK] SBOM válido: {path}")
+print(f"[INFO] Componentes SBOM fuente: {len(data.get('components', []))}")
+PY
 '''
             }
         }
@@ -377,7 +412,7 @@ fi
                 docker {
                     image 'devsecops-agente:1.0'
                     reuseNode true
-                    args '-u 101:103 -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro'
+                    args '-u 101:103 -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
                 }
             }
             steps {
@@ -392,18 +427,34 @@ export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
 echo "=== Precheck source SBOM ==="
 test -s results/sca/sbom-source.cyclonedx.json
 
-if command -v jq >/dev/null 2>&1; then
-  jq empty results/sca/sbom-source.cyclonedx.json
-  jq -e '.bomFormat == "CycloneDX"' results/sca/sbom-source.cyclonedx.json
-fi
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/sca/sbom-source.cyclonedx.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+if data.get("bomFormat") != "CycloneDX":
+    raise SystemExit("results/sca/sbom-source.cyclonedx.json no es CycloneDX")
+
+print("[OK] Source SBOM JSON/CycloneDX válido")
+PY
 
 echo "=== Precheck curated vendor manifest ==="
 test -s .lab/sca/vendor-manifest.cdx.json
 
-if command -v jq >/dev/null 2>&1; then
-  jq empty .lab/sca/vendor-manifest.cdx.json
-  jq -e '.bomFormat == "CycloneDX"' .lab/sca/vendor-manifest.cdx.json
-fi
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path(".lab/sca/vendor-manifest.cdx.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+if data.get("bomFormat") != "CycloneDX":
+    raise SystemExit(".lab/sca/vendor-manifest.cdx.json no es CycloneDX")
+
+print("[OK] Vendor manifest JSON/CycloneDX válido")
+PY
 
 if [ -f .lab/sca/validate_vendor_manifest.py ]; then
   python3 .lab/sca/validate_vendor_manifest.py
@@ -431,10 +482,17 @@ grype sbom:results/sca/vendor-manifest.cdx.json \
 test -s results/sca/grype-source.json
 test -s results/sca/grype-vendor-manifest.json
 
-if command -v jq >/dev/null 2>&1; then
-  jq empty results/sca/grype-source.json
-  jq empty results/sca/grype-vendor-manifest.json
-fi
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+for path in [
+    Path("results/sca/grype-source.json"),
+    Path("results/sca/grype-vendor-manifest.json"),
+]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    print(f"[OK] Grype JSON válido: {path} | matches={len(data.get('matches', []))}")
+PY
 
 echo "=== SCA artifacts ==="
 ls -lh results/sca/sbom-source.cyclonedx.json || true
@@ -491,8 +549,15 @@ fi
 
 test -s results/sca/owaspdc.json || echo "WARNING: OWASP Dependency-Check JSON report was not generated."
 
-if [ -s results/sca/owaspdc.json ] && command -v jq >/dev/null 2>&1; then
-  jq empty results/sca/owaspdc.json
+if [ -s results/sca/owaspdc.json ]; then
+  python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/sca/owaspdc.json")
+json.loads(path.read_text(encoding="utf-8"))
+print(f"[OK] JSON válido: {path}")
+PY
 fi
 '''
             }
@@ -539,6 +604,165 @@ fi
             }
         }
 
+        stage('Firmware Image - RootFS') {
+            when {
+                expression { return params.RUN_EMBA_ROOTFS }
+            }
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                    args '-u 101:103'
+                }
+            }
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p results/firmware
+rm -rf build-rootfs
+
+ROOTFS="${WORKSPACE}/build-rootfs/rootfs"
+mkdir -p "$ROOTFS"
+
+echo "=== Creating minimal Mosquitto rootfs for EMBA ==="
+
+mkdir -p "$ROOTFS/usr/sbin"
+mkdir -p "$ROOTFS/usr/bin"
+mkdir -p "$ROOTFS/etc/mosquitto"
+mkdir -p "$ROOTFS/etc/init.d"
+mkdir -p "$ROOTFS/etc"
+mkdir -p "$ROOTFS/var/log"
+mkdir -p "$ROOTFS/var/lib/mosquitto"
+mkdir -p "$ROOTFS/tmp"
+
+test -x build/src/mosquitto
+cp build/src/mosquitto "$ROOTFS/usr/sbin/mosquitto"
+
+if [ -x build/client/mosquitto_pub ]; then
+  cp build/client/mosquitto_pub "$ROOTFS/usr/bin/mosquitto_pub"
+fi
+
+if [ -x build/client/mosquitto_sub ]; then
+  cp build/client/mosquitto_sub "$ROOTFS/usr/bin/mosquitto_sub"
+fi
+
+cat > "$ROOTFS/etc/os-release" <<'EOF'
+NAME="Mosquitto DevSecOps Lab Firmware"
+ID=mosquitto-devsecops-lab
+VERSION_ID="2.0.18"
+PRETTY_NAME="Mosquitto DevSecOps Lab Firmware 2.0.18"
+EOF
+
+cat > "$ROOTFS/etc/mosquitto/mosquitto.conf" <<'EOF'
+pid_file /tmp/mosquitto.pid
+persistence true
+persistence_location /var/lib/mosquitto/
+log_dest file /var/log/mosquitto.log
+listener 1883
+allow_anonymous true
+EOF
+
+cat > "$ROOTFS/etc/init.d/S50mosquitto" <<'EOF'
+#!/bin/sh
+case "$1" in
+  start)
+    /usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf
+    ;;
+  stop)
+    killall mosquitto || true
+    ;;
+  *)
+    echo "Usage: $0 {start|stop}"
+    exit 1
+    ;;
+esac
+EOF
+
+chmod +x "$ROOTFS/etc/init.d/S50mosquitto"
+
+echo "=== Copying dynamic library dependencies ==="
+ldd build/src/mosquitto | tee results/firmware/mosquitto-ldd.txt
+
+python3 - <<'PY'
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+workspace = Path(os.environ["WORKSPACE"])
+rootfs = workspace / "build-rootfs" / "rootfs"
+binary = workspace / "build" / "src" / "mosquitto"
+
+out = subprocess.check_output(["ldd", str(binary)], text=True)
+paths = set()
+
+for line in out.splitlines():
+    for match in re.findall(r"(/[^\\s]+)", line):
+        if Path(match).exists():
+            paths.add(match)
+
+for line in out.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("/") and "=>" not in stripped:
+        candidate = stripped.split()[0]
+        if Path(candidate).exists():
+            paths.add(candidate)
+
+copied = []
+
+for src in sorted(paths):
+    src_path = Path(src)
+    dst = rootfs / src_path.relative_to("/")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        shutil.copy2(src_path, dst)
+        copied.append((src, str(dst.relative_to(rootfs))))
+    except Exception as exc:
+        print(f"WARNING: could not copy {src}: {exc}")
+
+manifest = workspace / "results" / "firmware" / "rootfs-copied-libraries.txt"
+manifest.write_text("\\n".join(f"{src} -> {dst}" for src, dst in copied) + "\\n", encoding="utf-8")
+print(f"[OK] Copied {len(copied)} dynamic library dependencies")
+PY
+
+echo "=== Adding Debian package metadata when available ==="
+mkdir -p "$ROOTFS/var/lib/dpkg"
+
+if command -v dpkg-query >/dev/null 2>&1; then
+  dpkg-query -W -f='Package: ${binary:Package}\\nVersion: ${Version}\\nArchitecture: ${Architecture}\\nStatus: install ok installed\\n\\n' \
+    libc6 libssl3 libssl-dev openssl zlib1g libwebsockets17 2>/dev/null \
+    > "$ROOTFS/var/lib/dpkg/status" || true
+fi
+
+if [ ! -s "$ROOTFS/var/lib/dpkg/status" ]; then
+  cat > "$ROOTFS/var/lib/dpkg/status" <<'EOF'
+Package: mosquitto-devsecops-lab
+Version: 2.0.18
+Architecture: amd64
+Status: install ok installed
+Description: Synthetic package metadata for Mosquitto DevSecOps lab firmware.
+EOF
+fi
+
+echo "=== Recording firmware manifest ==="
+find "$ROOTFS" -maxdepth 4 -type f | sort > results/firmware/rootfs-file-list.txt
+
+tar -C "$ROOTFS" -czf results/firmware/mosquitto-rootfs.tar.gz .
+
+test -s results/firmware/mosquitto-rootfs.tar.gz
+
+echo "=== Firmware artifacts ==="
+ls -lh results/firmware/mosquitto-rootfs.tar.gz
+ls -lh results/firmware/mosquitto-ldd.txt
+ls -lh results/firmware/rootfs-copied-libraries.txt || true
+ls -lh results/firmware/rootfs-file-list.txt
+'''
+            }
+        }
+
         stage('Firmware Analysis - EMBA') {
             agent any
             steps {
@@ -548,11 +772,21 @@ set -euo pipefail
 mkdir -p results/emba
 rm -rf results/emba/*
 
+if [ "${RUN_EMBA_ROOTFS:-false}" = "true" ] && [ -s "${WORKSPACE}/results/firmware/mosquitto-rootfs.tar.gz" ]; then
+  EMBA_TARGET="${WORKSPACE}/results/firmware/mosquitto-rootfs.tar.gz"
+  echo "=== EMBA target: rootfs firmware archive ==="
+else
+  EMBA_TARGET="${WORKSPACE}/build/src/mosquitto"
+  echo "=== EMBA target: ELF binary fallback ==="
+fi
+
+test -e "$EMBA_TARGET"
+
 cd /opt/emba
 
 sudo -n ./emba \
   -l "${WORKSPACE}/results/emba" \
-  -f "${WORKSPACE}/build/src/mosquitto" \
+  -f "$EMBA_TARGET" \
   -p /opt/emba/scan-profiles/full-scan.emba \
   -y || true
 
@@ -585,12 +819,15 @@ checksec \
 
 test -s results/hardening/checksec.json
 
-if command -v jq >/dev/null 2>&1; then
-  jq empty results/hardening/checksec.json
-  jq '.' results/hardening/checksec.json
-else
-  echo "jq not available in image; skipping JSON syntax validation."
-fi
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/hardening/checksec.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+print(f"[OK] JSON válido: {path}")
+print(json.dumps(data, indent=2))
+PY
 '''
             }
         }
