@@ -136,6 +136,21 @@ def write_text(path: Path, data: str) -> None:
     path.write_bytes(data.encode("utf-8"))
 
 
+def clean_seed_dirs() -> None:
+    """Remove and recreate the seed directories before generation.
+
+    This guarantees that no libFuzzer-generated entries (hash-named files
+    written by previous campaigns) survive into the committed seed corpus.
+    Only MQTT_DIR and CJSON_DIR are touched; findings and other artefacts
+    are left untouched.
+    """
+    import shutil
+    for d in (MQTT_DIR, CJSON_DIR):
+        if d.exists():
+            shutil.rmtree(d)
+        d.mkdir(parents=True)
+
+
 def generate_mqtt_seeds() -> list[tuple[Path, int]]:
     """Emit the three MQTT 3.1.1 seeds. Returns (path, first_byte) tuples
     so the caller can print a verification summary."""
@@ -180,15 +195,16 @@ def generate_cjson_seeds() -> list[Path]:
 
 
 def main() -> int:
+    clean_seed_dirs()
     mqtt_report = generate_mqtt_seeds()
     cjson_report = generate_cjson_seeds()
 
-    print("MQTT seeds:")
+    print(f"[OK] MQTT seeds: {len(mqtt_report)}")
     for path, first_byte in mqtt_report:
         rel = path.relative_to(HERE.parent.parent.parent) if path.is_absolute() else path
         print(f"  {rel}  first_byte=0x{first_byte:02x}")
 
-    print("cJSON seeds:")
+    print(f"[OK] cJSON seeds: {len(cjson_report)}")
     for path in cjson_report:
         rel = path.relative_to(HERE.parent.parent.parent) if path.is_absolute() else path
         print(f"  {rel}")
