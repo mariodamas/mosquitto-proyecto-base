@@ -575,7 +575,7 @@ fi
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-rm -rf .lab/fuzzing/findings || true
+rm -rf .lab/fuzzing/findings
 
 cmake -S . -B build \
   -DCMAKE_C_COMPILER=clang \
@@ -588,18 +588,50 @@ cd .lab/fuzzing
 python3 corpus/generate_corpus.py
 bash ./build_libfuzzer.sh
 
-CAMPAIGN_TIME=60 bash ./run_campaigns.sh libfuzzer || true
+# ALLOW_FUZZING_FAILURES=true: el fuzzing no bloquea el pipeline pero
+# deja constancia del exit_code real en los artefactos.
+ALLOW_FUZZING_FAILURES=true CAMPAIGN_TIME=60 bash ./run_campaigns.sh libfuzzer
 
 mkdir -p "${WORKSPACE}/results/fuzzing"
 
 if [ -d "${WORKSPACE}/.lab/fuzzing/findings" ]; then
-  cp -r "${WORKSPACE}/.lab/fuzzing/findings/." "${WORKSPACE}/results/fuzzing/" || true
+  cp -r "${WORKSPACE}/.lab/fuzzing/findings/." "${WORKSPACE}/results/fuzzing/"
 fi
 
 if [ -d "${WORKSPACE}/.lab/fuzzing/build" ]; then
   mkdir -p "${WORKSPACE}/results/fuzzing/build"
-  cp -r "${WORKSPACE}/.lab/fuzzing/build/." "${WORKSPACE}/results/fuzzing/build/" || true
+  cp -r "${WORKSPACE}/.lab/fuzzing/build/." "${WORKSPACE}/results/fuzzing/build/"
 fi
+
+echo "=== Validating fuzzing logs ==="
+python3 - <<\'PY\'
+import sys
+from pathlib import Path
+
+findings = Path("results/fuzzing/libfuzzer")
+if not findings.exists():
+    print("[WARN] No libfuzzer findings directory — harnesses may have been skipped")
+    sys.exit(0)
+
+errors = []
+for harness_dir in sorted(findings.iterdir()):
+    if not harness_dir.is_dir():
+        continue
+    log = harness_dir / "run.log"
+    ec_file = harness_dir / "exit_code.txt"
+    if not log.exists():
+        errors.append(f"{harness_dir.name}: run.log missing")
+    elif log.stat().st_size == 0:
+        errors.append(f"{harness_dir.name}: run.log is empty")
+    else:
+        ec = ec_file.read_text().strip() if ec_file.exists() else "unknown"
+        print(f"[OK] {harness_dir.name}: log={log.stat().st_size}B  exit_code={ec}")
+
+if errors:
+    for e in errors:
+        print(f"[FAIL] {e}", file=sys.stderr)
+    sys.exit(1)
+PY
 '''
             }
         }

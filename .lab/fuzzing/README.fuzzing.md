@@ -26,14 +26,40 @@ PATH. Jenkins orchestration lives elsewhere; nothing here calls Jenkins.
 | `findings/libfuzzer/` `findings/afl/`     | Campaign logs, crashes, corpora (git-ignored).       |
 | `coverage/`                               | `.profraw`, `.profdata`, HTML coverage (git-ignored).|
 
+## Corpus separation
+
+The fuzzing setup distinguishes three categories of corpus data:
+
+| Category | Location | Description |
+|----------|----------|-------------|
+| **Seed corpus** (stable) | `corpus/mqtt/`, `corpus/cjson/` | Minimal valid inputs generated deterministically by `generate_corpus.py`. Versioned in the repository. Only 3 MQTT seeds and 6 JSON seeds. Never written to by libFuzzer. |
+| **Working corpus** (evolved) | `findings/libfuzzer/<harness>/corpus/` | Seeds copied from the stable corpus at campaign start; libFuzzer mutates and expands these. Saved as build artefact but **not committed** back to `corpus/`. |
+| **Crashes / findings** | `findings/libfuzzer/<harness>/crashes/` | Inputs that triggered crashes or sanitizer violations. Saved as artefacts for triage. |
+| **Run metadata** | `findings/libfuzzer/<harness>/run.log`, `exit_code.txt`, `metadata.txt` | Execution record: binary, seed dir, corpus dir, timestamps, exit code, corpus size. |
+
+### Promoting evolved corpus entries
+
+Entries in `findings/libfuzzer/<harness>/corpus/` that improve coverage may be
+promoted to the seed corpus, but only after **manual review**:
+
+1. Inspect the candidate input (e.g. `xxd <file>`).
+2. Confirm it exercises a new parser path and is not a crash input.
+3. Copy it to `corpus/mqtt/` or `corpus/cjson/` with a descriptive name.
+4. Re-run `python3 corpus/generate_corpus.py` — this **will** delete the directory
+   and regenerate only the canonical seeds, so copy the file **before** running it.
+
+> **Never** automatically commit the contents of `findings/` to `corpus/`.
+> libFuzzer-generated entries are build artefacts, not source files.
+
 ## Environment
 
-| Variable          | Default              | Meaning                                           |
-| ----------------- | -------------------- | ------------------------------------------------- |
-| `MOSQUITTO_SRC`   | `../../`             | Path to the Mosquitto source tree.                |
-| `CAMPAIGN_TIME`   | `1800` (seconds)     | Per-harness wall-clock budget for `run_campaigns.sh`. |
-| `AFL_USE_ASAN`    | `1` (set by script)  | AFL++ + AddressSanitizer.                         |
-| `AFL_USE_UBSAN`   | `1` (set by script)  | AFL++ + UndefinedBehaviorSanitizer.               |
+| Variable                  | Default              | Meaning                                           |
+| ------------------------- | -------------------- | ------------------------------------------------- |
+| `MOSQUITTO_SRC`           | `../../`             | Path to the Mosquitto source tree.                |
+| `CAMPAIGN_TIME`           | `1800` (seconds)     | Per-harness wall-clock budget for `run_campaigns.sh`. |
+| `ALLOW_FUZZING_FAILURES`  | `false`              | If `true`, `run_campaigns.sh` exits 0 even when a harness exits non-zero. Use in CI for informational campaigns. |
+| `AFL_USE_ASAN`            | `1` (set by script)  | AFL++ + AddressSanitizer.                         |
+| `AFL_USE_UBSAN`           | `1` (set by script)  | AFL++ + UndefinedBehaviorSanitizer.               |
 
 ## Typical pipeline usage
 
