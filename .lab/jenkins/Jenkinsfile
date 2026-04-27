@@ -10,6 +10,12 @@ pipeline {
 
     parameters {
         booleanParam(
+            name: 'RUN_CODEQL',
+            defaultValue: true,
+            description: 'Ejecutar análisis SAST con CodeQL. Desactivar bajo demanda para acelerar el pipeline cuando el SAST de Coverity es suficiente.'
+        )
+
+        booleanParam(
             name: 'RUN_COVERITY_CERT',
             defaultValue: true,
             description: 'Ejecutar análisis CERT C con Coverity. Activado por defecto; desactivar bajo demanda para acelerar el pipeline.'
@@ -143,6 +149,9 @@ PY
         }
 
         stage('SAST - CodeQL') {
+            when {
+                expression { return params.RUN_CODEQL }
+            }
             agent {
                 docker {
                     image 'devsecops-agente:1.0'
