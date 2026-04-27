@@ -10,6 +10,12 @@ pipeline {
 
     parameters {
         booleanParam(
+            name: 'RUN_COVERITY_CERT',
+            defaultValue: true,
+            description: 'Ejecutar análisis CERT C con Coverity. Activado por defecto; desactivar bajo demanda para acelerar el pipeline.'
+        )
+
+        booleanParam(
             name: 'RUN_COVERITY_MISRA',
             defaultValue: false,
             description: 'Ejecutar análisis MISRA C 2012 con Coverity. Recomendado solo bajo demanda por su alto volumen de hallazgos.'
@@ -221,7 +227,9 @@ test -r "${WORKSPACE}/coverity-license.dat"
 CERT_CFG=/opt/coverity/config/coding-standards/cert-c/cert-c-all.config
 MISRA_CFG=/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config
 
-test -f "$CERT_CFG"
+if [ "${RUN_COVERITY_CERT:-true}" = "true" ]; then
+  test -f "$CERT_CFG"
+fi
 
 if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
   test -f "$MISRA_CFG"
@@ -265,7 +273,10 @@ rm -rf build-coverity/cov-int-cert
 rm -rf build-coverity/cov-int-misra
 
 cp -a build-coverity/cov-int-base build-coverity/cov-int-standard
-cp -a build-coverity/cov-int-base build-coverity/cov-int-cert
+
+if [ "${RUN_COVERITY_CERT:-true}" = "true" ]; then
+  cp -a build-coverity/cov-int-base build-coverity/cov-int-cert
+fi
 
 echo "=== Coverity standard analysis ==="
 /opt/coverity/bin/cov-manage-emit \
@@ -288,24 +299,28 @@ test -s results/sast/coverity-standard.json
 # Alias de compatibilidad para consumidores antiguos.
 cp results/sast/coverity-standard.json results/sast/coverity.json
 
-echo "=== Coverity CERT C compliance analysis ==="
-/opt/coverity/bin/cov-manage-emit \
-  --dir build-coverity/cov-int-cert \
-  reset-host-name
+if [ "${RUN_COVERITY_CERT:-true}" = "true" ]; then
+  echo "=== Coverity CERT C compliance analysis ==="
+  /opt/coverity/bin/cov-manage-emit \
+    --dir build-coverity/cov-int-cert \
+    reset-host-name
 
-/opt/coverity/bin/cov-analyze \
-  --security-file "${WORKSPACE}/coverity-license.dat" \
-  --dir build-coverity/cov-int-cert \
-  --disable-default \
-  --coding-standard-config "$CERT_CFG" \
-  2>&1 | tee results/compliance/coverity-cert-analyze.log
+  /opt/coverity/bin/cov-analyze \
+    --security-file "${WORKSPACE}/coverity-license.dat" \
+    --dir build-coverity/cov-int-cert \
+    --disable-default \
+    --coding-standard-config "$CERT_CFG" \
+    2>&1 | tee results/compliance/coverity-cert-analyze.log
 
-/opt/coverity/bin/cov-format-errors \
-  --security-file "${WORKSPACE}/coverity-license.dat" \
-  --dir build-coverity/cov-int-cert \
-  --json-output-v8 results/compliance/coverity-cert.json
+  /opt/coverity/bin/cov-format-errors \
+    --security-file "${WORKSPACE}/coverity-license.dat" \
+    --dir build-coverity/cov-int-cert \
+    --json-output-v8 results/compliance/coverity-cert.json
 
-test -s results/compliance/coverity-cert.json
+  test -s results/compliance/coverity-cert.json
+else
+  echo "Coverity CERT C skipped. Enable RUN_COVERITY_CERT=true to run it."
+fi
 
 if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
   echo "=== Coverity MISRA C 2012 compliance analysis ==="
@@ -341,12 +356,14 @@ from pathlib import Path
 paths = [
     Path("results/sast/coverity-standard.json"),
     Path("results/sast/coverity.json"),
-    Path("results/compliance/coverity-cert.json"),
 ]
 
-misra = Path("results/compliance/coverity-misra.json")
-if misra.exists():
-    paths.append(misra)
+for optional in [
+    Path("results/compliance/coverity-cert.json"),
+    Path("results/compliance/coverity-misra.json"),
+]:
+    if optional.exists():
+        paths.append(optional)
 
 for path in paths:
     json.loads(path.read_text(encoding="utf-8"))
