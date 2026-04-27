@@ -1,8 +1,18 @@
 #!/bin/sh
 # build_libfuzzer.sh
 # ------------------
-# Build selected fuzz harnesses with libFuzzer + AddressSanitizer +
+# Build the enabled fuzz harnesses with libFuzzer + AddressSanitizer +
 # UndefinedBehaviorSanitizer.
+#
+# Currently enabled harnesses (CI smoke build):
+#   fuzz_packet_parser_libfuzzer  — broker-side MQTT property/packet parser
+#   fuzz_bridge_remap_libfuzzer   — broker-side bridge inbound-topic remap
+#
+# Excluded harness (not compiled):
+#   fuzz_suback_client            — client-side SUBACK parser; excluded because
+#                                   its link closure is not yet minimal/stubbed.
+#                                   Re-enable in run_campaigns.sh once the build
+#                                   target is added here.
 #
 # IMPORTANT:
 # - The analysis environment must provide clang on PATH.
@@ -13,11 +23,6 @@
 #
 # Output:
 #   .lab/fuzzing/build/<harness>_libfuzzer
-#
-# NOTE:
-#   fuzz_suback_client is temporarily excluded from the smoke build because
-#   its client-side link closure is not yet minimal/stubbed. The broker-side
-#   harnesses remain fully usable for CI smoke fuzzing.
 set -eu
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 MOSQUITTO_SRC="${MOSQUITTO_SRC:-$HERE/../..}"
@@ -54,5 +59,5 @@ mkdir -p "$BUILD_DIR"
    "$HERE/harnesses/fuzz_bridge_remap.c" \
    $BRIDGE_TUS \
    -o "$BUILD_DIR/fuzz_bridge_remap_libfuzzer"
-echo "libFuzzer binaries:"
-ls -1 "$BUILD_DIR"/*_libfuzzer 2>/dev/null || true
+echo "Enabled libFuzzer binaries:"
+ls -1 "$BUILD_DIR"/*_libfuzzer 2>/dev/null || echo "  (none found)" >&2

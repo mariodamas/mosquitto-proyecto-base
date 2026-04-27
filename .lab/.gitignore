@@ -4,6 +4,9 @@
 # measure_coverage.sh, and build_artifact.sh. They are regenerated per run
 # and must not be committed.
 
+# Fuzzing build outputs, working corpora, crashes, and run metadata.
+# NOTE: fuzzing/corpus/ is intentionally NOT listed here — the seed corpus
+# (corpus/mqtt/*.bin, corpus/cjson/*.json) is versioned and must be committed.
 fuzzing/build/
 fuzzing/findings/
 fuzzing/coverage/

@@ -20,6 +20,12 @@ pipeline {
             defaultValue: true,
             description: 'Construir un rootfs mínimo de laboratorio y ejecutar EMBA sobre ese artefacto en lugar de solo sobre el ELF.'
         )
+
+        booleanParam(
+            name: 'ALLOW_FUZZING_FAILURES',
+            defaultValue: true,
+            description: 'Si true, un harness con exit code distinto de cero no bloquea el pipeline; los artefactos (run.log, crashes, corpus) se archivan igual. Los errores de infraestructura (log vacío, corpus vacío) fallan siempre.'
+        )
     }
 
     environment {
@@ -568,7 +574,9 @@ fi
                 docker {
                     image 'devsecops-agente:1.0'
                     reuseNode true
-                    args '-u 101:103'
+                    // Persistent corpus volume: survives across builds without
+                    // touching the versioned seed corpus in the repository.
+                    args '-u 101:103 -v /opt/devsecops-lab/fuzzing-corpus:/opt/devsecops-lab/fuzzing-corpus:rw'
                 }
             }
             steps {
@@ -588,9 +596,15 @@ cd .lab/fuzzing
 python3 corpus/generate_corpus.py
 bash ./build_libfuzzer.sh
 
-# ALLOW_FUZZING_FAILURES=true: el fuzzing no bloquea el pipeline pero
-# deja constancia del exit_code real en los artefactos.
-ALLOW_FUZZING_FAILURES=true CAMPAIGN_TIME=60 bash ./run_campaigns.sh libfuzzer
+# Run campaigns.
+# FUZZING_PERSISTENT_CORPUS_DIR: host-mounted volume with accumulated corpus.
+#   Merged into the working corpus before each run; updated (cp -n) after.
+# ALLOW_FUZZING_FAILURES: passed from the Jenkins parameter so the operator
+#   can choose blocking vs. informational behaviour at trigger time.
+FUZZING_PERSISTENT_CORPUS_DIR=/opt/devsecops-lab/fuzzing-corpus/mosquitto \
+ALLOW_FUZZING_FAILURES="${ALLOW_FUZZING_FAILURES}" \
+CAMPAIGN_TIME=60 \
+bash ./run_campaigns.sh libfuzzer
 
 mkdir -p "${WORKSPACE}/results/fuzzing"
 
@@ -603,32 +617,72 @@ if [ -d "${WORKSPACE}/.lab/fuzzing/build" ]; then
   cp -r "${WORKSPACE}/.lab/fuzzing/build/." "${WORKSPACE}/results/fuzzing/build/"
 fi
 
-echo "=== Validating fuzzing logs ==="
+echo "=== Validating fuzzing artefacts ==="
 python3 - <<\'PY\'
 import sys
 from pathlib import Path
+
+ALLOW_FAILURES = "${ALLOW_FUZZING_FAILURES}".strip().lower() == "true"
 
 findings = Path("results/fuzzing/libfuzzer")
 if not findings.exists():
     print("[WARN] No libfuzzer findings directory — harnesses may have been skipped")
     sys.exit(0)
 
-errors = []
+infra_errors = []
+fuzzer_failures = []
+
 for harness_dir in sorted(findings.iterdir()):
     if not harness_dir.is_dir():
         continue
-    log = harness_dir / "run.log"
-    ec_file = harness_dir / "exit_code.txt"
-    if not log.exists():
-        errors.append(f"{harness_dir.name}: run.log missing")
-    elif log.stat().st_size == 0:
-        errors.append(f"{harness_dir.name}: run.log is empty")
-    else:
-        ec = ec_file.read_text().strip() if ec_file.exists() else "unknown"
-        print(f"[OK] {harness_dir.name}: log={log.stat().st_size}B  exit_code={ec}")
 
-if errors:
-    for e in errors:
+    name    = harness_dir.name
+    log     = harness_dir / "run.log"
+    ec_file = harness_dir / "exit_code.txt"
+    meta    = harness_dir / "metadata.txt"
+    corpus  = harness_dir / "corpus"
+
+    # Infrastructure checks — always fatal.
+    if not log.exists():
+        infra_errors.append(f"{name}: run.log missing")
+        continue
+    if log.stat().st_size == 0:
+        infra_errors.append(f"{name}: run.log is empty")
+        continue
+    if not ec_file.exists():
+        infra_errors.append(f"{name}: exit_code.txt missing")
+        continue
+    if not meta.exists():
+        infra_errors.append(f"{name}: metadata.txt missing")
+        continue
+    if not corpus.exists() or not any(corpus.iterdir()):
+        infra_errors.append(f"{name}: working corpus is empty")
+        continue
+
+    ec = ec_file.read_text().strip()
+    corpus_count = sum(1 for f in corpus.iterdir() if f.is_file())
+    crashes_dir = harness_dir / "crashes"
+    crash_count = sum(1 for f in crashes_dir.iterdir() if f.is_file()) if crashes_dir.exists() else 0
+
+    psynced = "n/a"
+    for line in meta.read_text().splitlines():
+        if line.startswith("persistent_synced:"):
+            psynced = line.split(":", 1)[1].strip()
+
+    print(f"[OK] {name}: log={log.stat().st_size}B  exit_code={ec}  corpus={corpus_count}  crashes={crash_count}  persistent_synced={psynced}")
+
+    if ec != "0":
+        fuzzer_failures.append(f"{name}: exit_code={ec}")
+
+# Infrastructure errors are always fatal.
+if infra_errors:
+    for e in infra_errors:
+        print(f"[FAIL] {e}", file=sys.stderr)
+    sys.exit(1)
+
+# Fuzzer exit codes are fatal only in strict mode.
+if fuzzer_failures and not ALLOW_FAILURES:
+    for e in fuzzer_failures:
         print(f"[FAIL] {e}", file=sys.stderr)
     sys.exit(1)
 PY
