@@ -876,36 +876,80 @@ ls -lh results/firmware/rootfs-file-list.txt
         }
 
         stage('Firmware Analysis - EMBA') {
-            agent any
-            steps {
-                sh '''#!/usr/bin/env bash
+    agent any
+    steps {
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/emba
 rm -rf results/emba/*
 
+# EMBA valida de forma estricta las rutas de entrada/salida.
+# Jenkins puede usar workspaces con caracteres como "@2", por ejemplo:
+# /var/lib/jenkins/workspace/mosquitto-devsecops-local@2
+# Para evitar que EMBA rechace esas rutas, copiamos el input a una ruta
+# temporal limpia bajo /tmp y luego copiamos los resultados de vuelta a results/emba.
+
+BUILD_ID_SAFE="${BUILD_NUMBER:-0}"
+EMBA_WORK="/tmp/emba/${BUILD_ID_SAFE}"
+EMBA_INPUT_DIR="${EMBA_WORK}/input"
+EMBA_LOG_DIR="${EMBA_WORK}/logs"
+
+rm -rf "$EMBA_WORK"
+mkdir -p "$EMBA_INPUT_DIR"
+mkdir -p "$EMBA_LOG_DIR"
+
 if [ "${RUN_EMBA_ROOTFS:-false}" = "true" ] && [ -s "${WORKSPACE}/results/firmware/mosquitto-rootfs.tar.gz" ]; then
-  EMBA_TARGET="${WORKSPACE}/results/firmware/mosquitto-rootfs.tar.gz"
   echo "=== EMBA target: rootfs firmware archive ==="
+  cp "${WORKSPACE}/results/firmware/mosquitto-rootfs.tar.gz" "${EMBA_INPUT_DIR}/mosquittoRootfs"
+  EMBA_TARGET="${EMBA_INPUT_DIR}/mosquittoRootfs"
 else
-  EMBA_TARGET="${WORKSPACE}/build/src/mosquitto"
   echo "=== EMBA target: ELF binary fallback ==="
+  test -x "${WORKSPACE}/build/src/mosquitto"
+  cp "${WORKSPACE}/build/src/mosquitto" "${EMBA_INPUT_DIR}/mosquitto"
+  EMBA_TARGET="${EMBA_INPUT_DIR}/mosquitto"
 fi
+
+echo "=== EMBA safe execution paths ==="
+echo "WORKSPACE=${WORKSPACE}"
+echo "EMBA_WORK=${EMBA_WORK}"
+echo "EMBA_TARGET=${EMBA_TARGET}"
+echo "EMBA_LOG_DIR=${EMBA_LOG_DIR}"
 
 test -e "$EMBA_TARGET"
 
 cd /opt/emba
 
+set +e
 sudo -n ./emba \
-  -l "${WORKSPACE}/results/emba" \
+  -l "$EMBA_LOG_DIR" \
   -f "$EMBA_TARGET" \
   -p /opt/emba/scan-profiles/full-scan.emba \
-  -y || true
+  -y
+EMBA_RC=$?
+set -e
 
-sudo -n chown -R "$(id -u):$(id -g)" "${WORKSPACE}/results/emba" || true
+echo "$EMBA_RC" > "${WORKSPACE}/results/emba/emba-exit-code.txt"
+
+echo "=== Copying EMBA results back to Jenkins workspace ==="
+if [ -d "$EMBA_LOG_DIR" ]; then
+  sudo -n chown -R "$(id -u):$(id -g)" "$EMBA_LOG_DIR" || true
+  cp -a "$EMBA_LOG_DIR/." "${WORKSPACE}/results/emba/" || true
+fi
+
+echo "=== EMBA artifacts ==="
+find "${WORKSPACE}/results/emba" -maxdepth 3 -type f | sort | sed -n '1,120p' || true
+
+echo "=== Cleaning temporary EMBA workdir ==="
+rm -rf "$EMBA_WORK" || true
+
+# EMBA se mantiene como etapa no bloqueante:
+# - fallos parciales de EMBA no rompen el pipeline;
+# - errores de infraestructura previos, como no encontrar el input, sí fallan por set -e.
+exit 0
 '''
-            }
-        }
+    }
+}
 
         stage('Hardening') {
             agent {
