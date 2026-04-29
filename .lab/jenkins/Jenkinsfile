@@ -36,7 +36,7 @@ pipeline {
         booleanParam(
             name: 'ALLOW_FUZZING_FAILURES',
             defaultValue: true,
-            description: 'Si true, un harness con exit code distinto de cero no bloquea el pipeline; los artefactos (run.log, crashes, corpus) se archivan igual. Los errores de infraestructura (log vacío, corpus vacío) fallan siempre.'
+            description: 'Si true, un harness con exit code distinto de cero no bloquea el pipeline; los artefactos se archivan igual. Los errores de infraestructura fallan siempre.'
         )
     }
 
@@ -230,9 +230,6 @@ chmod 600 "${WORKSPACE}/coverity-license.dat"
 
 trap 'rm -f "${WORKSPACE}/coverity-license.dat"' EXIT
 
-test -f "${WORKSPACE}/coverity-license.dat"
-test -r "${WORKSPACE}/coverity-license.dat"
-
 CERT_CFG=/opt/coverity/config/coding-standards/cert-c/cert-c-all.config
 MISRA_CFG=/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config
 
@@ -305,11 +302,11 @@ echo "=== Coverity standard analysis ==="
 
 test -s results/sast/coverity-standard.json
 
-# Alias de compatibilidad para consumidores antiguos.
 cp results/sast/coverity-standard.json results/sast/coverity.json
 
 if [ "${RUN_COVERITY_CERT:-true}" = "true" ]; then
   echo "=== Coverity CERT C compliance analysis ==="
+
   /opt/coverity/bin/cov-manage-emit \
     --dir build-coverity/cov-int-cert \
     reset-host-name
@@ -455,6 +452,19 @@ mkdir -p results/sca
 
 export GRYPE_DB_AUTO_UPDATE=false
 export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
+export GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h
+
+echo "=== Grype DB status ==="
+grype db status -o json | tee results/sca/grype-db-status.json
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+path = Path("results/sca/grype-db-status.json")
+json.loads(path.read_text(encoding="utf-8"))
+print(f"[OK] Grype DB status JSON válido: {path}")
+PY
 
 echo "=== Precheck source SBOM ==="
 test -s results/sca/sbom-source.cyclonedx.json
@@ -532,6 +542,7 @@ ls -lh results/sca/vendor-manifest.cdx.json || true
 ls -lh results/sca/vendor-manifest.evidence.md || true
 ls -lh results/sca/grype-source.json || true
 ls -lh results/sca/grype-vendor-manifest.json || true
+ls -lh results/sca/grype-db-status.json || true
 '''
             }
         }
@@ -600,8 +611,6 @@ fi
                 docker {
                     image 'devsecops-agente:1.0'
                     reuseNode true
-                    // Persistent corpus volume: survives across builds without
-                    // touching the versioned seed corpus in the repository.
                     args '-u 101:103 -v /opt/devsecops-lab/fuzzing-corpus:/opt/devsecops-lab/fuzzing-corpus:rw'
                 }
             }
@@ -622,11 +631,6 @@ cd .lab/fuzzing
 python3 corpus/generate_corpus.py
 bash ./build_libfuzzer.sh
 
-# Run campaigns.
-# FUZZING_PERSISTENT_CORPUS_DIR: host-mounted volume with accumulated corpus.
-#   Merged into the working corpus before each run; updated (cp -n) after.
-# ALLOW_FUZZING_FAILURES: passed from the Jenkins parameter so the operator
-#   can choose blocking vs. informational behaviour at trigger time.
 FUZZING_PERSISTENT_CORPUS_DIR=/opt/devsecops-lab/fuzzing-corpus/mosquitto \
 ALLOW_FUZZING_FAILURES="${ALLOW_FUZZING_FAILURES}" \
 CAMPAIGN_TIME=60 \
@@ -644,7 +648,7 @@ if [ -d "${WORKSPACE}/.lab/fuzzing/build" ]; then
 fi
 
 echo "=== Validating fuzzing artefacts ==="
-python3 - <<\'PY\'
+python3 - <<'PY'
 import sys
 from pathlib import Path
 
@@ -668,7 +672,6 @@ for harness_dir in sorted(findings.iterdir()):
     meta    = harness_dir / "metadata.txt"
     corpus  = harness_dir / "corpus"
 
-    # Infrastructure checks — always fatal.
     if not log.exists():
         infra_errors.append(f"{name}: run.log missing")
         continue
@@ -700,13 +703,11 @@ for harness_dir in sorted(findings.iterdir()):
     if ec != "0":
         fuzzer_failures.append(f"{name}: exit_code={ec}")
 
-# Infrastructure errors are always fatal.
 if infra_errors:
     for e in infra_errors:
         print(f"[FAIL] {e}", file=sys.stderr)
     sys.exit(1)
 
-# Fuzzer exit codes are fatal only in strict mode.
 if fuzzer_failures and not ALLOW_FAILURES:
     for e in fuzzer_failures:
         print(f"[FAIL] {e}", file=sys.stderr)
@@ -876,19 +877,13 @@ ls -lh results/firmware/rootfs-file-list.txt
         }
 
         stage('Firmware Analysis - EMBA') {
-    agent any
-    steps {
-        sh '''#!/usr/bin/env bash
+            agent any
+            steps {
+                sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/emba
 rm -rf results/emba/*
-
-# EMBA valida de forma estricta las rutas de entrada/salida.
-# Jenkins puede usar workspaces con caracteres como "@2", por ejemplo:
-# /var/lib/jenkins/workspace/mosquitto-devsecops-local@2
-# Para evitar que EMBA rechace esas rutas, copiamos el input a una ruta
-# temporal limpia bajo /tmp y luego copiamos los resultados de vuelta a results/emba.
 
 BUILD_ID_SAFE="${BUILD_NUMBER:-0}"
 EMBA_WORK="/tmp/emba/${BUILD_ID_SAFE}"
@@ -943,13 +938,10 @@ find "${WORKSPACE}/results/emba" -maxdepth 3 -type f | sort | sed -n '1,120p' ||
 echo "=== Cleaning temporary EMBA workdir ==="
 rm -rf "$EMBA_WORK" || true
 
-# EMBA se mantiene como etapa no bloqueante:
-# - fallos parciales de EMBA no rompen el pipeline;
-# - errores de infraestructura previos, como no encontrar el input, sí fallan por set -e.
 exit 0
 '''
-    }
-}
+            }
+        }
 
         stage('Hardening') {
             agent {
@@ -984,6 +976,165 @@ data = json.loads(path.read_text(encoding="utf-8"))
 print(f"[OK] JSON válido: {path}")
 print(json.dumps(data, indent=2))
 PY
+'''
+            }
+        }
+
+        stage('Persist Monitoring Inventories') {
+            agent any
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT="mosquitto"
+BUILD_ID_SAFE="${BUILD_NUMBER:-manual}"
+DEST="/opt/devsecops-lab/artifacts/${PROJECT}/${BUILD_ID_SAFE}"
+
+mkdir -p "${DEST}/sca"
+mkdir -p "${DEST}/emba/SBOM"
+mkdir -p "${DEST}/metadata"
+
+echo "=== Persisting monitoring inventories ==="
+echo "DEST=${DEST}"
+
+copy_if_exists() {
+  src="$1"
+  dst="$2"
+  if [ -s "$src" ]; then
+    cp "$src" "$dst"
+    echo "[OK] $src -> $dst"
+  else
+    echo "[WARN] Missing: $src"
+  fi
+}
+
+copy_if_exists results/sca/sbom-source.cyclonedx.json \
+  "${DEST}/sca/sbom-source.cyclonedx.json"
+
+copy_if_exists results/sca/vendor-manifest.cdx.json \
+  "${DEST}/sca/vendor-manifest.cdx.json"
+
+copy_if_exists results/sca/grype-source.json \
+  "${DEST}/sca/grype-source.json"
+
+copy_if_exists results/sca/grype-vendor-manifest.json \
+  "${DEST}/sca/grype-vendor-manifest.json"
+
+copy_if_exists results/sca/grype-db-status.json \
+  "${DEST}/sca/grype-db-status.json"
+
+EMBA_SBOM_SRC=""
+for candidate in \
+  "results/emba/SBOM/EMBA_cyclonedx_sbom.json" \
+  "results/emba/SBOM/EMBA_cyclonedx_vex_sbom.json"
+do
+  if [ -s "$candidate" ]; then
+    EMBA_SBOM_SRC="$candidate"
+    break
+  fi
+done
+
+if [ -n "$EMBA_SBOM_SRC" ]; then
+  cp "$EMBA_SBOM_SRC" "${DEST}/emba/SBOM/EMBA_cyclonedx_sbom.json"
+  echo "[OK] EMBA SBOM persisted from $EMBA_SBOM_SRC"
+else
+  echo "[WARN] No EMBA CycloneDX SBOM found"
+fi
+
+sha_or_null() {
+  if [ -s "$1" ]; then sha256sum "$1" | awk '{print $1}'; else echo ""; fi
+}
+
+size_or_zero() {
+  if [ -s "$1" ]; then stat -c '%s' "$1"; else echo 0; fi
+}
+
+cat > "${DEST}/metadata/build.json" <<EOF
+{
+  "project": "${PROJECT}",
+  "jenkins_build_number": "${BUILD_ID_SAFE}",
+  "jenkins_build_url": "${BUILD_URL:-}",
+  "git_branch": "${BRANCH_NAME:-}",
+  "git_commit": "${GIT_COMMIT:-}",
+  "workspace": "${WORKSPACE:-}",
+  "persisted_at_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+
+cat > "${DEST}/metadata/inventories.json" <<EOF
+{
+  "project": "${PROJECT}",
+  "build_id": "${BUILD_ID_SAFE}",
+  "inventories": [
+    {
+      "id": "source_sbom",
+      "logical_name": "syft-source-sbom",
+      "path": "${DEST}/sca/sbom-source.cyclonedx.json",
+      "origin": "source_sbom",
+      "source_type": "SYFT_SBOM",
+      "scope": "source_or_build_inventory",
+      "artifact_type": "SBOM",
+      "detection_phase": "SCA_SOURCE_SBOM",
+      "required": true,
+      "sha256": "$(sha_or_null "${DEST}/sca/sbom-source.cyclonedx.json")",
+      "size_bytes": $(size_or_zero "${DEST}/sca/sbom-source.cyclonedx.json")
+    },
+    {
+      "id": "vendor_manifest",
+      "logical_name": "curated-vendor-manifest",
+      "path": "${DEST}/sca/vendor-manifest.cdx.json",
+      "origin": "vendor_manifest",
+      "source_type": "VENDOR_MANIFEST",
+      "scope": "curated_dependency_inventory",
+      "artifact_type": "SBOM",
+      "detection_phase": "SCA_VENDOR_MANIFEST",
+      "required": true,
+      "sha256": "$(sha_or_null "${DEST}/sca/vendor-manifest.cdx.json")",
+      "size_bytes": $(size_or_zero "${DEST}/sca/vendor-manifest.cdx.json")
+    },
+    {
+      "id": "emba_sbom",
+      "logical_name": "emba-rootfs-sbom",
+      "path": "${DEST}/emba/SBOM/EMBA_cyclonedx_sbom.json",
+      "origin": "emba_sbom",
+      "source_type": "EMBA_SBOM",
+      "scope": "runtime_rootfs_inventory",
+      "artifact_type": "SBOM",
+      "detection_phase": "SCA_FIRMWARE_SBOM",
+      "required": false,
+      "sha256": "$(sha_or_null "${DEST}/emba/SBOM/EMBA_cyclonedx_sbom.json")",
+      "size_bytes": $(size_or_zero "${DEST}/emba/SBOM/EMBA_cyclonedx_sbom.json")
+    }
+  ]
+}
+EOF
+
+echo "=== Validating persisted inventories ==="
+python3 - <<PY
+import json
+from pathlib import Path
+
+registry = json.loads(Path("${DEST}/metadata/inventories.json").read_text(encoding="utf-8"))
+
+for inv in registry["inventories"]:
+    path = Path(inv["path"])
+    required = inv["required"]
+
+    if not path.exists() or path.stat().st_size == 0:
+        if required:
+            raise SystemExit(f"Required inventory missing: {path}")
+        print(f"[WARN] Optional inventory missing: {path}")
+        continue
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("bomFormat") != "CycloneDX":
+        raise SystemExit(f"Not CycloneDX: {path}")
+
+    print(f"[OK] {inv['id']} | components={len(data.get('components', []))} | {path}")
+PY
+
+echo "=== Persisted monitoring inputs ==="
+find "${DEST}" -type f | sort
 '''
             }
         }
