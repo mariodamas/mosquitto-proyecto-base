@@ -1,0 +1,108 @@
+pipeline {
+   agent none
+   options {
+       timestamps()
+       disableConcurrentBuilds()
+       buildDiscarder(logRotator(numToKeepStr: '20'))
+       skipDefaultCheckout(true)
+   }
+   triggers {
+       cron('30 7 1 * *')
+   }
+   parameters {
+       string(
+           name: 'PROJECT',
+           defaultValue: 'mosquitto',
+           description: 'Proyecto cuyos inventarios persistidos se reevaluarán.'
+       )
+       booleanParam(
+           name: 'IMPORT_LATEST_BUNDLE',
+           defaultValue: true,
+           description: 'Importar el último bundle disponible antes de reevaluar.'
+       )
+   }
+   environment {
+       LAB = '/opt/devsecops-lab'
+   }
+   stages {
+       stage('Precheck') {
+           agent any
+           steps {
+               sh '''#!/usr/bin/env bash
+set -euo pipefail
+echo "=== Monitoring precheck ==="
+test -d "${LAB}"
+test -d "${LAB}/artifacts/${PROJECT}"
+test -d "${LAB}/vuln-dbs/grype"
+test -x "${LAB}/bin/import-vuln-bundle.sh"
+test -x "${LAB}/bin/reevaluate-sboms.sh"
+echo "=== Current persisted inventories ==="
+find "${LAB}/artifacts/${PROJECT}" -maxdepth 5 -type f | sort | sed -n '1,160p' || true
+echo "=== Incoming bundles ==="
+ls -lh "${LAB}/incoming-vuln-bundles" || true
+'''
+           }
+       }
+       stage('Import latest bundle') {
+           when {
+               expression { return params.IMPORT_LATEST_BUNDLE }
+           }
+           agent any
+           steps {
+               sh '''#!/usr/bin/env bash
+set -euo pipefail
+LATEST="$(ls -1t "${LAB}/incoming-vuln-bundles"/vuln-intel-bundle-*.tar.gz 2>/dev/null | head -1 || true)"
+if [ -z "$LATEST" ]; then
+ echo "No incoming bundle found. Continuing with current Grype DB."
+ exit 0
+fi
+echo "Importing bundle: $LATEST"
+"${LAB}/bin/import-vuln-bundle.sh" "$LATEST"
+'''
+           }
+       }
+       stage('Reevaluate inventories') {
+           agent {
+               docker {
+                   image 'devsecops-agente:1.0'
+                   reuseNode true
+                   args '-u 101:103 -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+               }
+           }
+           steps {
+               sh '''#!/usr/bin/env bash
+set -euo pipefail
+"${LAB}/bin/reevaluate-sboms.sh" "${PROJECT}"
+'''
+           }
+       }
+       stage('Collect monitoring artifacts') {
+           agent any
+           steps {
+               sh '''#!/usr/bin/env bash
+set -euo pipefail
+rm -rf monitoring-results
+mkdir -p monitoring-results
+if [ -d "${LAB}/monitoring/${PROJECT}" ]; then
+ cp -a "${LAB}/monitoring/${PROJECT}/." monitoring-results/
+fi
+find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,250p'
+'''
+           }
+       }
+   }
+   post {
+       always {
+           node('') {
+               archiveArtifacts artifacts: 'monitoring-results/**', allowEmptyArchive: true
+               echo "Monitoring artifacts archived."
+           }
+       }
+       success {
+           echo 'Monitoring job OK'
+       }
+       failure {
+           echo 'Monitoring job FAILED'
+       }
+   }
+}
