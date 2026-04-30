@@ -9,8 +9,14 @@ pipeline {
     }
 
     triggers {
-        // Ejecución mensual: día 2 de cada mes a las 08:00.
-        // Se deja margen para que el día 1 se genere y transfiera manualmente el bundle.
+        /*
+         * Ejecución mensual del job de monitorización.
+         *
+         * Se programa el día 2 de cada mes a las 08:00 para dejar margen a que:
+         *  - el día 1 se genere el bundle en la máquina frontera;
+         *  - se transfiera manualmente al entorno Jenkins;
+         *  - el día 2 Jenkins lo importe y reevalúe los inventarios.
+         */
         cron('0 8 2 * *')
     }
 
@@ -24,7 +30,7 @@ pipeline {
         booleanParam(
             name: 'IMPORT_LATEST_BUNDLE',
             defaultValue: true,
-            description: 'Importar el último bundle disponible antes de reevaluar. Si ya está activo, se omite la reimportación.'
+            description: 'Importar el último bundle disponible antes de reevaluar. Si ya está activo, se omite la importación.'
         )
     }
 
@@ -36,6 +42,7 @@ pipeline {
     stages {
         stage('Precheck') {
             agent any
+
             steps {
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -46,9 +53,7 @@ echo "TARGET_PROJECT=${TARGET_PROJECT}"
 
 test -d "${LAB}"
 test -d "${LAB}/artifacts/${TARGET_PROJECT}"
-test -d "${LAB}/vuln-dbs"
 test -d "${LAB}/vuln-dbs/grype"
-test -d "${LAB}/incoming-vuln-bundles"
 test -x "${LAB}/bin/import-vuln-bundle.sh"
 test -x "${LAB}/bin/reevaluate-sboms.sh"
 
@@ -58,11 +63,11 @@ find "${LAB}/artifacts/${TARGET_PROJECT}" -maxdepth 5 -type f | sort | sed -n '1
 echo "=== Incoming bundles ==="
 ls -lh "${LAB}/incoming-vuln-bundles" || true
 
-echo "=== Current active bundle manifest ==="
+echo "=== Active Grype bundle metadata, if available ==="
 if [ -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ]; then
   cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
 else
-  echo "No current-bundle-manifest.json found yet."
+  echo "No active bundle manifest found yet."
 fi
 '''
             }
@@ -72,53 +77,50 @@ fi
             when {
                 expression { return params.IMPORT_LATEST_BUNDLE }
             }
+
             agent any
+
             steps {
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 echo "=== Import latest vulnerability bundle ==="
 
-LATEST_FILE="$(find "${LAB}/incoming-vuln-bundles" \
-  -maxdepth 1 \
-  -type f \
-  -name 'vuln-intel-bundle-*.tar.gz' \
-  -printf '%f\\n' | sort | tail -1 || true)"
+LATEST="$(ls -1t "${LAB}/incoming-vuln-bundles"/vuln-intel-bundle-*.tar.gz 2>/dev/null | head -1 || true)"
 
-if [ -z "$LATEST_FILE" ]; then
+if [ -z "$LATEST" ]; then
   echo "No incoming bundle found. Continuing with current Grype DB."
   exit 0
 fi
 
-LATEST="${LAB}/incoming-vuln-bundles/${LATEST_FILE}"
-LATEST_NAME="${LATEST_FILE%.tar.gz}"
-CHECKSUM="${LATEST}.sha256"
-CURRENT_MANIFEST="${LAB}/vuln-dbs/current-bundle-manifest.json"
+LATEST_SHA="${LATEST}.sha256"
 
-echo "Latest incoming bundle file: ${LATEST_FILE}"
-echo "Latest incoming bundle path: ${LATEST}"
-
-if [ -s "$CHECKSUM" ]; then
-  echo "=== Verifying external bundle checksum ==="
-  (
-    cd "${LAB}/incoming-vuln-bundles"
-    sha256sum -c "$(basename "$CHECKSUM")"
-  )
-else
-  echo "WARNING: external checksum file not found: ${CHECKSUM}"
-  echo "The import script will still verify internal SHA256SUMS and GPG signature."
+if [ ! -s "$LATEST_SHA" ]; then
+  echo "ERROR: checksum file not found for latest bundle: $LATEST_SHA"
+  exit 1
 fi
+
+echo "Latest incoming bundle: $LATEST"
+echo "Latest incoming checksum: $LATEST_SHA"
+
+echo "=== Verifying external bundle checksum ==="
+(
+  cd "$(dirname "$LATEST")"
+  sha256sum -c "$(basename "$LATEST_SHA")"
+)
+
+LATEST_NAME="$(basename "$LATEST" .tar.gz)"
+CURRENT_MANIFEST="${LAB}/vuln-dbs/current-bundle-manifest.json"
 
 CURRENT_NAME=""
 if [ -s "$CURRENT_MANIFEST" ]; then
-  CURRENT_NAME="$(python3 - "$CURRENT_MANIFEST" <<'PY'
+  CURRENT_NAME="$(python3 - <<PY
 import json
-import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
+p = Path("$CURRENT_MANIFEST")
 try:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(p.read_text(encoding="utf-8"))
     print(data.get("bundle_name", ""))
 except Exception:
     print("")
@@ -126,20 +128,30 @@ PY
 )"
 fi
 
-echo "Current active bundle: ${CURRENT_NAME:-<none>}"
-echo "Incoming bundle:       ${LATEST_NAME}"
+echo "Latest incoming bundle name: ${LATEST_NAME}"
+echo "Current active bundle name: ${CURRENT_NAME:-<none>}"
 
 if [ "$LATEST_NAME" = "$CURRENT_NAME" ]; then
   echo "Latest incoming bundle is already active. Skipping import."
   exit 0
 fi
 
-echo "Importing new bundle: $LATEST"
+echo "=== Importing new bundle ==="
 "${LAB}/bin/import-vuln-bundle.sh" "$LATEST"
 
-echo "=== Import completed ==="
-if [ -s "$CURRENT_MANIFEST" ]; then
-  cat "$CURRENT_MANIFEST"
+echo "=== Imported bundle metadata ==="
+if [ -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ]; then
+  cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
+fi
+
+echo "=== Active Grype DB status after import ==="
+if command -v grype >/dev/null 2>&1; then
+  export GRYPE_DB_AUTO_UPDATE=false
+  export GRYPE_DB_CACHE_DIR="${LAB}/vuln-dbs/grype"
+  export GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h
+  grype db status -o json || true
+else
+  echo "grype is not installed on host. DB will be validated inside Docker in the next stage."
 fi
 '''
             }
@@ -153,6 +165,7 @@ fi
                     args '-u 101:103 -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
                 }
             }
+
             steps {
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -165,8 +178,42 @@ echo "Project: ${TARGET_PROJECT}"
             }
         }
 
+        stage('Retention cleanup') {
+            agent {
+                docker {
+                    image 'devsecops-agente:1.0'
+                    reuseNode true
+                    /*
+                     * Se ejecuta como root dentro del contenedor para poder limpiar:
+                     *  - incoming-vuln-bundles, normalmente propiedad de jenkins;
+                     *  - imports, normalmente propiedad de jenkins;
+                     *  - monitoring, generado por UID 101:103.
+                     *
+                     * No limpia /opt/devsecops-lab/artifacts, porque ahí están los
+                     * inventarios históricos necesarios para reevaluación y ETL.
+                     */
+                    args '-u 0:0 -v /opt/devsecops-lab:/opt/devsecops-lab:rw'
+                }
+            }
+
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Applying monitoring retention policy ==="
+
+if [ -x "${LAB}/bin/cleanup-monitoring-retention.sh" ]; then
+  "${LAB}/bin/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
+else
+  echo "WARNING: cleanup script not found or not executable: ${LAB}/bin/cleanup-monitoring-retention.sh"
+fi
+'''
+            }
+        }
+
         stage('Collect monitoring artifacts') {
             agent any
+
             steps {
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
