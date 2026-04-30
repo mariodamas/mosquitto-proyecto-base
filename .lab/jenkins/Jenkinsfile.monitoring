@@ -10,7 +10,7 @@ pipeline {
 
     triggers {
         // Ejecución mensual: día 2 de cada mes a las 08:00.
-        // Así tienes margen para generar y transferir el bundle el día 1.
+        // Se deja margen para que el día 1 se genere y transfiera manualmente el bundle.
         cron('0 8 2 * *')
     }
 
@@ -24,7 +24,7 @@ pipeline {
         booleanParam(
             name: 'IMPORT_LATEST_BUNDLE',
             defaultValue: true,
-            description: 'Importar el último bundle disponible antes de reevaluar.'
+            description: 'Importar el último bundle disponible antes de reevaluar. Si ya está activo, se omite la reimportación.'
         )
     }
 
@@ -46,15 +46,24 @@ echo "TARGET_PROJECT=${TARGET_PROJECT}"
 
 test -d "${LAB}"
 test -d "${LAB}/artifacts/${TARGET_PROJECT}"
+test -d "${LAB}/vuln-dbs"
 test -d "${LAB}/vuln-dbs/grype"
+test -d "${LAB}/incoming-vuln-bundles"
 test -x "${LAB}/bin/import-vuln-bundle.sh"
 test -x "${LAB}/bin/reevaluate-sboms.sh"
 
 echo "=== Current persisted inventories ==="
-find "${LAB}/artifacts/${TARGET_PROJECT}" -maxdepth 5 -type f | sort | sed -n '1,160p' || true
+find "${LAB}/artifacts/${TARGET_PROJECT}" -maxdepth 5 -type f | sort | sed -n '1,200p' || true
 
 echo "=== Incoming bundles ==="
 ls -lh "${LAB}/incoming-vuln-bundles" || true
+
+echo "=== Current active bundle manifest ==="
+if [ -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ]; then
+  cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
+else
+  echo "No current-bundle-manifest.json found yet."
+fi
 '''
             }
         }
@@ -68,15 +77,70 @@ ls -lh "${LAB}/incoming-vuln-bundles" || true
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
-LATEST="$(ls -1t "${LAB}/incoming-vuln-bundles"/vuln-intel-bundle-*.tar.gz 2>/dev/null | head -1 || true)"
+echo "=== Import latest vulnerability bundle ==="
 
-if [ -z "$LATEST" ]; then
+LATEST_FILE="$(find "${LAB}/incoming-vuln-bundles" \
+  -maxdepth 1 \
+  -type f \
+  -name 'vuln-intel-bundle-*.tar.gz' \
+  -printf '%f\\n' | sort | tail -1 || true)"
+
+if [ -z "$LATEST_FILE" ]; then
   echo "No incoming bundle found. Continuing with current Grype DB."
   exit 0
 fi
 
-echo "Importing bundle: $LATEST"
+LATEST="${LAB}/incoming-vuln-bundles/${LATEST_FILE}"
+LATEST_NAME="${LATEST_FILE%.tar.gz}"
+CHECKSUM="${LATEST}.sha256"
+CURRENT_MANIFEST="${LAB}/vuln-dbs/current-bundle-manifest.json"
+
+echo "Latest incoming bundle file: ${LATEST_FILE}"
+echo "Latest incoming bundle path: ${LATEST}"
+
+if [ -s "$CHECKSUM" ]; then
+  echo "=== Verifying external bundle checksum ==="
+  (
+    cd "${LAB}/incoming-vuln-bundles"
+    sha256sum -c "$(basename "$CHECKSUM")"
+  )
+else
+  echo "WARNING: external checksum file not found: ${CHECKSUM}"
+  echo "The import script will still verify internal SHA256SUMS and GPG signature."
+fi
+
+CURRENT_NAME=""
+if [ -s "$CURRENT_MANIFEST" ]; then
+  CURRENT_NAME="$(python3 - "$CURRENT_MANIFEST" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    print(data.get("bundle_name", ""))
+except Exception:
+    print("")
+PY
+)"
+fi
+
+echo "Current active bundle: ${CURRENT_NAME:-<none>}"
+echo "Incoming bundle:       ${LATEST_NAME}"
+
+if [ "$LATEST_NAME" = "$CURRENT_NAME" ]; then
+  echo "Latest incoming bundle is already active. Skipping import."
+  exit 0
+fi
+
+echo "Importing new bundle: $LATEST"
 "${LAB}/bin/import-vuln-bundle.sh" "$LATEST"
+
+echo "=== Import completed ==="
+if [ -s "$CURRENT_MANIFEST" ]; then
+  cat "$CURRENT_MANIFEST"
+fi
 '''
             }
         }
@@ -107,6 +171,8 @@ echo "Project: ${TARGET_PROJECT}"
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
+echo "=== Collect monitoring artifacts ==="
+
 rm -rf monitoring-results
 mkdir -p monitoring-results
 
@@ -117,7 +183,7 @@ else
 fi
 
 echo "=== Collected monitoring artifacts ==="
-find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,250p' || true
+find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,300p' || true
 '''
             }
         }
