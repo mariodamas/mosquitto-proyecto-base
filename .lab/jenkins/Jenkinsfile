@@ -38,6 +38,12 @@ pipeline {
             defaultValue: true,
             description: 'Si true, un harness con exit code distinto de cero no bloquea el pipeline; los artefactos se archivan igual. Los errores de infraestructura fallan siempre.'
         )
+
+        string(
+            name: 'FUZZING_CAMPAIGN_TIME',
+            defaultValue: '300',
+            description: 'Duración en segundos de cada campaña libFuzzer por harness. Usar 60 para smoke rápido, 300 para CI razonable y 900-1800 para campañas extendidas.'
+        )
     }
 
     environment {
@@ -634,6 +640,20 @@ fi
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
 
+echo "=== Fuzzing configuration ==="
+echo "ALLOW_FUZZING_FAILURES=${ALLOW_FUZZING_FAILURES}"
+echo "FUZZING_CAMPAIGN_TIME=${FUZZING_CAMPAIGN_TIME}"
+
+if ! [[ "${FUZZING_CAMPAIGN_TIME}" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: FUZZING_CAMPAIGN_TIME must be a positive integer number of seconds"
+  exit 1
+fi
+
+if [ "${FUZZING_CAMPAIGN_TIME}" -lt 1 ]; then
+  echo "ERROR: FUZZING_CAMPAIGN_TIME must be greater than 0"
+  exit 1
+fi
+
 rm -rf .lab/fuzzing/findings
 
 cmake -S . -B build \
@@ -649,7 +669,7 @@ bash ./build_libfuzzer.sh
 
 FUZZING_PERSISTENT_CORPUS_DIR=/opt/devsecops-lab/fuzzing-corpus/mosquitto \
 ALLOW_FUZZING_FAILURES="${ALLOW_FUZZING_FAILURES}" \
-CAMPAIGN_TIME=60 \
+CAMPAIGN_TIME="${FUZZING_CAMPAIGN_TIME}" \
 bash ./run_campaigns.sh libfuzzer
 
 mkdir -p "${WORKSPACE}/results/fuzzing"
