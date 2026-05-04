@@ -44,16 +44,28 @@ pipeline {
             defaultValue: '300',
             description: 'Duración en segundos de cada campaña libFuzzer por harness. Usar 60 para smoke rápido, 300 para CI razonable y 900-1800 para campañas extendidas.'
         )
+
+        booleanParam(
+            name: 'RUN_ETL',
+            defaultValue: true,
+            description: 'Ejecutar el servicio de ingestión y normalización para persistir los resultados del pipeline en PostgreSQL.'
+        )
     }
 
     environment {
         RESULTS = 'results'
 
         PROJECT_NAME = 'mosquitto'
+        PROJECT_DB_NAME = 'mosquitto-proyecto-base'
+        PROJECT_REPO_URL = 'https://github.com/mariodamas/mosquitto-proyecto-base'
+
         PROJECT_LANGUAGE = 'C/C++'
         PROJECT_PLATFORM_TYPE = 'linux_embedded'
 
         EXECUTION_TYPE = 'ci_pipeline'
+
+        PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
+        INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
     }
 
     stages {
@@ -1238,6 +1250,113 @@ echo "=== ETL artifact persistence completed ==="
 '''
             }
         }
+
+        stage('ETL - Ingest Results') {
+            when {
+                expression { return params.RUN_ETL }
+            }
+
+            agent any
+
+            steps {
+                catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+                    withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
+                        sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT="${PROJECT_NAME:-mosquitto}"
+BUILD_ID_SAFE="${BUILD_NUMBER:-manual}"
+
+SNAPSHOT_DIR="/opt/devsecops-lab/artifacts/${PROJECT}/${BUILD_ID_SAFE}"
+RESULTS_DIR="${SNAPSHOT_DIR}/raw/results"
+
+echo "=== ETL ingestion ==="
+echo "PROJECT=${PROJECT}"
+echo "PROJECT_DB_NAME=${PROJECT_DB_NAME}"
+echo "BUILD_ID=${BUILD_ID_SAFE}"
+echo "SNAPSHOT_DIR=${SNAPSHOT_DIR}"
+echo "RESULTS_DIR=${RESULTS_DIR}"
+echo "PLATFORM_DIR=${PLATFORM_DIR}"
+echo "INGESTOR_SRC=${INGESTOR_SRC}"
+
+echo "=== ETL prechecks ==="
+
+test -d "${PLATFORM_DIR}" || {
+  echo "ERROR: platform directory not found: ${PLATFORM_DIR}"
+  exit 1
+}
+
+test -d "${INGESTOR_SRC}" || {
+  echo "ERROR: ingestor source directory not found: ${INGESTOR_SRC}"
+  exit 1
+}
+
+test -f "${INGESTOR_SRC}/ingestor/cli.py" || {
+  echo "ERROR: ingestor CLI not found: ${INGESTOR_SRC}/ingestor/cli.py"
+  exit 1
+}
+
+test -d "${RESULTS_DIR}" || {
+  echo "ERROR: persisted results directory not found: ${RESULTS_DIR}"
+  echo "Persist ETL Artifacts stage may have failed or produced an incomplete snapshot."
+  exit 1
+}
+
+echo "=== Checking key result artifacts ==="
+find "${RESULTS_DIR}" -maxdepth 3 -type f | sort | sed -n '1,120p'
+
+echo "=== Checking Python import path ==="
+export PYTHONPATH="${INGESTOR_SRC}"
+
+python3 - <<'PY'
+import ingestor
+print(f"[OK] ingestor importado desde: {ingestor.__file__}")
+PY
+
+echo "=== Checking PostgreSQL Python driver ==="
+python3 - <<'PY'
+import psycopg2
+print("[OK] psycopg2 disponible")
+PY
+
+echo "=== Checking Git metadata ==="
+COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "${GIT_COMMIT:-UNKNOWN}")"
+BRANCH_SAFE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "${BRANCH_NAME:-exp/mosquitto-v2.0.18-lab}")"
+
+if [ "${BRANCH_SAFE}" = "HEAD" ] || [ -z "${BRANCH_SAFE}" ]; then
+  BRANCH_SAFE="${BRANCH_NAME:-exp/mosquitto-v2.0.18-lab}"
+fi
+
+REPO_URL_SAFE="$(git config --get remote.origin.url 2>/dev/null || echo "${PROJECT_REPO_URL}")"
+
+if [ -z "${REPO_URL_SAFE}" ]; then
+  REPO_URL_SAFE="${PROJECT_REPO_URL}"
+fi
+
+echo "COMMIT_SHA=${COMMIT_SHA}"
+echo "BRANCH_SAFE=${BRANCH_SAFE}"
+echo "REPO_URL_SAFE=${REPO_URL_SAFE}"
+
+echo "=== Running ETL ingestor ==="
+
+python3 -m ingestor.cli \
+  --results-dir "${RESULTS_DIR}" \
+  --dsn "${DEVSECOPS_DB_DSN}" \
+  --project-name "${PROJECT_DB_NAME}" \
+  --repo-url "${REPO_URL_SAFE}" \
+  --branch "${BRANCH_SAFE}" \
+  --commit-sha "${COMMIT_SHA}" \
+  --pipeline-id "${JOB_NAME:-mosquitto-devsecops-local}" \
+  --build-number "${BUILD_NUMBER}" \
+  --execution-type "${EXECUTION_TYPE:-ci_pipeline}" \
+  --trigger-type "jenkins"
+
+echo "=== ETL ingestion completed successfully ==="
+'''
+                    }
+                }
+            }
+        }
     }
 
     post {
@@ -1251,6 +1370,10 @@ echo "=== ETL artifact persistence completed ==="
 
         success {
             echo 'Pipeline OK'
+        }
+
+        unstable {
+            echo 'Pipeline INESTABLE: revisar el stage ETL o advertencias de integración.'
         }
 
         failure {
