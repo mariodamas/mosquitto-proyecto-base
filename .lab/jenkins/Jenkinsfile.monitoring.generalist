@@ -143,9 +143,17 @@ fi
 set -euo pipefail
 
 RUN_ID="${BUILD_NUMBER:-manual}"
-ETL_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/etl/${RUN_ID}"
-rm -rf "${ETL_ROOT}"
-mkdir -p "${ETL_ROOT}"
+RUN_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/runs/${RUN_ID}"
+ETL_ROOT="${RUN_ROOT}/etl"
+RUN_METADATA="${RUN_ROOT}/metadata"
+rm -rf "${RUN_ROOT}"
+mkdir -p "${ETL_ROOT}" "${RUN_METADATA}"
+
+if [ -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ]; then
+  cp "${LAB}/vuln-dbs/current-bundle-manifest.json" "${RUN_METADATA}/current-bundle-manifest.json"
+fi
+
+grype db status -o json > "${RUN_METADATA}/grype-db-status.json" || true
 
 if [ "${REEVALUATE_SCOPE:-all}" = "latest" ]; then
   SNAPSHOTS="$(ls -1dt "${LAB}/artifacts/${TARGET_PROJECT}"/* 2>/dev/null | head -1 || true)"
@@ -184,6 +192,10 @@ for SNAPSHOT in ${SNAPSHOTS}; do
     COPIED=1
   fi
 
+  if [ -s "${RUN_METADATA}/current-bundle-manifest.json" ]; then
+    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/sca/current-bundle-manifest.json"
+  fi
+
   if [ "${COPIED}" -eq 0 ]; then
     echo "Skipping ${ORIGINAL_BUILD}: no SBOM inventories found."
     rm -rf "${RUN_SNAPSHOT}"
@@ -209,7 +221,7 @@ for SNAPSHOT in ${SNAPSHOTS}; do
     --execution-type offline_reanalysis
 done
 
-find "${ETL_ROOT}" -maxdepth 4 -type f | sort | sed -n '1,240p' || true
+find "${RUN_ROOT}" -maxdepth 5 -type f | sort | sed -n '1,240p' || true
 '''
       }
     }
@@ -224,7 +236,10 @@ find "${ETL_ROOT}" -maxdepth 4 -type f | sort | sed -n '1,240p' || true
 set -euo pipefail
 
 RUN_ID="${BUILD_NUMBER:-manual}"
-ETL_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/etl/${RUN_ID}"
+RUN_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/runs/${RUN_ID}"
+ETL_ROOT="${RUN_ROOT}/etl"
+RUN_METADATA="${RUN_ROOT}/metadata"
+test -d "${RUN_ROOT}"
 test -d "${ETL_ROOT}"
 test -d "${INGESTOR_SRC}"
 test -f "${INGESTOR_SRC}/ingestor/cli.py"
