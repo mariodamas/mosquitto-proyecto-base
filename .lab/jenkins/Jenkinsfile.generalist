@@ -1,0 +1,607 @@
+pipeline {
+  agent none
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    skipDefaultCheckout(true)
+  }
+
+  parameters {
+    string(name: 'PROJECT_CONFIG', defaultValue: '.devsecops/project.env', description: 'Project DevSecOps contract file')
+    string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
+
+    booleanParam(name: 'RUN_SECRETS', defaultValue: true, description: 'Run Gitleaks')
+    booleanParam(name: 'RUN_CODEQL', defaultValue: true, description: 'Run CodeQL SAST')
+    booleanParam(name: 'RUN_COVERITY_STANDARD', defaultValue: true, description: 'Run Coverity standard SAST')
+    booleanParam(name: 'RUN_COVERITY_CERT', defaultValue: true, description: 'Run Coverity CERT C')
+    booleanParam(name: 'RUN_COVERITY_MISRA', defaultValue: false, description: 'Run Coverity MISRA C 2012')
+    booleanParam(name: 'RUN_SCA', defaultValue: true, description: 'Run Syft and Grype SCA')
+    booleanParam(name: 'RUN_OWASPDC', defaultValue: true, description: 'Run OWASP Dependency-Check')
+    booleanParam(name: 'RUN_FUZZING', defaultValue: true, description: 'Run project fuzzing hook when present')
+    booleanParam(name: 'RUN_FIRMWARE', defaultValue: true, description: 'Run project firmware/rootfs packaging hook when present')
+    booleanParam(name: 'RUN_EMBA', defaultValue: true, description: 'Run EMBA on firmware or build artifact')
+    booleanParam(name: 'RUN_HARDENING', defaultValue: true, description: 'Run hardening checks on the main artifact')
+    booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest persisted results into PostgreSQL')
+
+    booleanParam(name: 'ALLOW_FUZZING_FAILURES', defaultValue: true, description: 'Do not fail CI on fuzzing findings')
+    string(name: 'FUZZING_CAMPAIGN_TIME', defaultValue: '300', description: 'Seconds per fuzzing harness')
+  }
+
+  environment {
+    LAB = '/opt/devsecops-lab'
+    RESULTS = 'results'
+    PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
+    INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
+    EXECUTION_TYPE = 'ci_pipeline'
+  }
+
+  stages {
+    stage('Checkout') {
+      agent any
+      steps {
+        checkout scm
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+rm -rf results build build-* build-coverity build-rootfs coverity-config .codeql-cache .cache .codeql-home .lab/fuzzing/findings || true
+mkdir -p results/sast results/compliance results/sca results/fuzzing results/emba results/firmware results/hardening results/build results/metadata
+
+test -f "${PROJECT_CONFIG:-.devsecops/project.env}"
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+: "${PROJECT_NAME:?PROJECT_NAME is required}"
+: "${BUILD_ARTIFACT:?BUILD_ARTIFACT is required}"
+test -f "${BUILD_SCRIPT:-.devsecops/build.sh}"
+
+echo "Project: ${PROJECT_NAME}"
+echo "Build artifact: ${BUILD_ARTIFACT}"
+'''
+      }
+    }
+
+    stage('Build') {
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+bash "${BUILD_SCRIPT:-.devsecops/build.sh}" build
+test -e "${BUILD_ARTIFACT}"
+cp -a "${BUILD_ARTIFACT}" results/build/
+'''
+      }
+    }
+
+    stage('Secrets') {
+      when { expression { params.RUN_SECRETS } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+TMP_SRC="$(mktemp -d)"
+trap 'rm -rf "${TMP_SRC}"' EXIT
+
+tar \
+  --exclude='./.git' \
+  --exclude='./.github' \
+  --exclude='./results' \
+  --exclude='./build' \
+  --exclude='./build-*' \
+  --exclude='./build-coverity' \
+  --exclude='./build-rootfs' \
+  --exclude='./coverity-config' \
+  --exclude='./.codeql-cache' \
+  --exclude='./.cache' \
+  --exclude='./.codeql-home' \
+  --exclude='./.lab/fuzzing/findings' \
+  -cf - . | tar -xf - -C "${TMP_SRC}"
+
+gitleaks detect \
+  --source "${TMP_SRC}" \
+  --no-git \
+  --report-format json \
+  --report-path results/sast/gitleaks.json \
+  --exit-code 0
+
+python3 -m json.tool results/sast/gitleaks.json >/dev/null
+'''
+      }
+    }
+
+    stage('CodeQL') {
+      when { expression { params.RUN_CODEQL } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103 -v /opt/devsecops-lab/codeql:/opt/codeql:ro'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+export HOME="${WORKSPACE}/.codeql-home"
+mkdir -p "${HOME}/.codeql"
+rm -rf build/codeql-db
+
+bash "${BUILD_SCRIPT:-.devsecops/build.sh}" codeql-configure
+
+/opt/codeql/codeql/codeql database create build/codeql-db \
+  --language="${CODEQL_LANGUAGE:-cpp}" \
+  --source-root=. \
+  --command="bash ${BUILD_SCRIPT:-.devsecops/build.sh} codeql-build"
+
+if [ -n "${CODEQL_SUITE:-}" ]; then
+  SUITE="${CODEQL_SUITE}"
+else
+  SUITE="$(find /opt/codeql/codeql/qlpacks -path "*/codeql/${CODEQL_QUERY_PACK:-cpp-queries}/*/codeql-suites/${CODEQL_SUITE_GLOB:-*security-and-quality.qls}" | sort | tail -1)"
+fi
+test -n "${SUITE}"
+
+/opt/codeql/codeql/codeql database analyze build/codeql-db \
+  "${SUITE}" \
+  --format=sarif-latest \
+  --output=results/sast/codeql.sarif
+
+python3 -m json.tool results/sast/codeql.sarif >/dev/null
+'''
+      }
+    }
+
+    stage('Coverity') {
+      when { expression { params.RUN_COVERITY_STANDARD || params.RUN_COVERITY_CERT || params.RUN_COVERITY_MISRA } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103'
+        }
+      }
+      steps {
+        withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
+          sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+test -r "${COV_LICENSE}"
+cp "${COV_LICENSE}" coverity-license.dat
+chmod 600 coverity-license.dat
+trap 'rm -f coverity-license.dat' EXIT
+
+rm -rf build-coverity coverity-config
+mkdir -p coverity-config results/sast results/compliance
+
+/opt/coverity/bin/cov-configure \
+  --config coverity-config/coverity_config.xml \
+  --template \
+  --compiler "${COVERITY_COMPILER:-clang}" \
+  --comptype "${COVERITY_COMPTYPE:-clangcc}"
+
+bash "${BUILD_SCRIPT:-.devsecops/build.sh}" coverity-configure
+
+/opt/coverity/bin/cov-build \
+  --config coverity-config/coverity_config.xml \
+  --dir build-coverity/cov-int-base \
+  --emit-complementary-info \
+  bash "${BUILD_SCRIPT:-.devsecops/build.sh}" coverity-build
+
+test -d build-coverity/cov-int-base
+
+run_coverity() {
+  local profile="$1"
+  local mode="$2"
+  local config="$3"
+  local output_json="$4"
+  local output_log="$5"
+  local cov_dir="build-coverity/cov-int-${profile}"
+
+  rm -rf "${cov_dir}"
+  cp -a build-coverity/cov-int-base "${cov_dir}"
+  /opt/coverity/bin/cov-manage-emit --dir "${cov_dir}" reset-host-name
+
+  if [ "${mode}" = "standard" ]; then
+    /opt/coverity/bin/cov-analyze \
+      --security-file coverity-license.dat \
+      --dir "${cov_dir}" \
+      --all 2>&1 | tee "${output_log}"
+  else
+    test -f "${config}"
+    /opt/coverity/bin/cov-analyze \
+      --security-file coverity-license.dat \
+      --dir "${cov_dir}" \
+      --disable-default \
+      --coding-standard-config "${config}" 2>&1 | tee "${output_log}"
+  fi
+
+  /opt/coverity/bin/cov-format-errors \
+    --security-file coverity-license.dat \
+    --dir "${cov_dir}" \
+    --json-output-v8 "${output_json}"
+
+  python3 -m json.tool "${output_json}" >/dev/null
+}
+
+if [ "${RUN_COVERITY_STANDARD:-true}" = "true" ]; then
+  run_coverity standard standard "" results/sast/coverity-standard.json results/sast/coverity-standard-analyze.log
+  cp results/sast/coverity-standard.json results/sast/coverity.json
+fi
+
+if [ "${RUN_COVERITY_CERT:-true}" = "true" ]; then
+  run_coverity cert compliance "${COVERITY_CERT_CONFIG:-/opt/coverity/config/coding-standards/cert-c/cert-c-all.config}" results/compliance/coverity-cert.json results/compliance/coverity-cert-analyze.log
+fi
+
+if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
+  run_coverity misra compliance "${COVERITY_MISRA_CONFIG:-/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config}" results/compliance/coverity-misra.json results/compliance/coverity-misra-analyze.log
+fi
+'''
+        }
+      }
+    }
+
+    stage('SCA') {
+      when { expression { params.RUN_SCA } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103 -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+mkdir -p "${WORKSPACE}/.cache" results/sca
+export XDG_CACHE_HOME="${WORKSPACE}/.cache"
+export GRYPE_DB_AUTO_UPDATE=false
+export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
+export GRYPE_DB_MAX_ALLOWED_BUILT_AGE="${GRYPE_DB_MAX_ALLOWED_BUILT_AGE:-720h}"
+
+syft . \
+  -o cyclonedx-json=results/sca/sbom-source.cyclonedx.json \
+  --exclude './.git/**' \
+  --exclude './.github/**' \
+  --exclude './results/**' \
+  --exclude './build/**' \
+  --exclude './build-*/**' \
+  --exclude './build-coverity/**' \
+  --exclude './build-rootfs/**' \
+  --exclude './coverity-config/**' \
+  --exclude './.codeql-cache/**' \
+  --exclude './.cache/**' \
+  --exclude './.codeql-home/**'
+
+python3 -m json.tool results/sca/sbom-source.cyclonedx.json >/dev/null
+
+if [ -n "${VENDOR_MANIFEST_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_PATH}" ]; then
+  if [ -n "${VENDOR_MANIFEST_VALIDATOR:-}" ] && [ -f "${VENDOR_MANIFEST_VALIDATOR}" ]; then
+    python3 "${VENDOR_MANIFEST_VALIDATOR}"
+  fi
+  cp "${VENDOR_MANIFEST_PATH}" results/sca/vendor-manifest.cdx.json
+  if [ -n "${VENDOR_MANIFEST_EVIDENCE_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_EVIDENCE_PATH}" ]; then
+    cp "${VENDOR_MANIFEST_EVIDENCE_PATH}" results/sca/vendor-manifest.evidence.md
+  fi
+elif [ "${VENDOR_MANIFEST_REQUIRED:-false}" = "true" ]; then
+  echo "ERROR: required vendor manifest not found: ${VENDOR_MANIFEST_PATH:-<unset>}" >&2
+  exit 1
+fi
+
+grype db status -o json > results/sca/grype-db-status.json
+grype sbom:results/sca/sbom-source.cyclonedx.json -o json --file results/sca/grype-source.json
+
+if [ -s results/sca/vendor-manifest.cdx.json ]; then
+  grype sbom:results/sca/vendor-manifest.cdx.json -o json --file results/sca/grype-vendor-manifest.json
+fi
+
+python3 -m json.tool results/sca/grype-db-status.json >/dev/null
+python3 -m json.tool results/sca/grype-source.json >/dev/null
+[ ! -s results/sca/grype-vendor-manifest.json ] || python3 -m json.tool results/sca/grype-vendor-manifest.json >/dev/null
+
+if [ "${RUN_OWASPDC:-true}" = "true" ]; then
+  ODC_TMP="/tmp/owaspdc-data-${BUILD_TAG:-$$}"
+  rm -rf "${ODC_TMP}"
+  mkdir -p "${ODC_TMP}"
+  cp -a /mnt/owaspdc-data/. "${ODC_TMP}/"
+
+  /opt/dependency-check/bin/dependency-check.sh \
+    --project "${PROJECT_NAME}" \
+    --scan . \
+    --exclude '.git/**' \
+    --exclude '.github/**' \
+    --exclude 'results/**' \
+    --exclude 'build/**' \
+    --exclude 'build-*/**' \
+    --exclude 'build-coverity/**' \
+    --exclude 'build-rootfs/**' \
+    --exclude 'coverity-config/**' \
+    --exclude '.codeql-cache/**' \
+    --exclude '.cache/**' \
+    --exclude '.codeql-home/**' \
+    --format JSON \
+    --format HTML \
+    --out results/sca \
+    --data "${ODC_TMP}" \
+    --noupdate \
+    --enableExperimental \
+    --disableAssembly || true
+
+  [ ! -f results/sca/dependency-check-report.json ] || cp results/sca/dependency-check-report.json results/sca/owaspdc.json
+  [ ! -s results/sca/owaspdc.json ] || python3 -m json.tool results/sca/owaspdc.json >/dev/null
+fi
+'''
+      }
+    }
+
+    stage('Fuzzing') {
+      when { expression { params.RUN_FUZZING } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103 -v /opt/devsecops-lab/fuzzing-corpus:/opt/devsecops-lab/fuzzing-corpus:rw'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+if [ -f "${FUZZING_SCRIPT:-.devsecops/fuzzing.sh}" ]; then
+  bash "${FUZZING_SCRIPT:-.devsecops/fuzzing.sh}"
+else
+  echo "No project fuzzing hook found; skipping."
+fi
+'''
+      }
+    }
+
+    stage('Firmware Package') {
+      when { expression { params.RUN_FIRMWARE } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+if [ -f "${FIRMWARE_SCRIPT:-.devsecops/package-firmware.sh}" ]; then
+  bash "${FIRMWARE_SCRIPT:-.devsecops/package-firmware.sh}"
+else
+  echo "No project firmware hook found; EMBA will use BUILD_ARTIFACT."
+fi
+'''
+      }
+    }
+
+    stage('EMBA') {
+      when { expression { params.RUN_EMBA } }
+      agent any
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+mkdir -p results/emba
+rm -rf results/emba/*
+
+TARGET=""
+if [ -s results/firmware/firmware-target.txt ]; then
+  TARGET="$(sed -n '1p' results/firmware/firmware-target.txt)"
+fi
+
+if [ -z "${TARGET}" ]; then
+  TARGET="$(find results/firmware -maxdepth 1 -type f \\( -name '*.tar.gz' -o -name '*.tgz' -o -name '*.tar' -o -name '*.img' -o -name '*.bin' \\) | sort | head -1 || true)"
+fi
+
+if [ -z "${TARGET}" ]; then
+  TARGET="${BUILD_ARTIFACT}"
+fi
+
+test -e "${TARGET}"
+
+SAFE_JOB="$(printf '%s' "${JOB_NAME:-job}" | tr '/: ' '___' | tr -cd 'A-Za-z0-9_.-')"
+SAFE_BUILD="$(printf '%s' "${BUILD_NUMBER:-manual}" | tr -cd 'A-Za-z0-9_.-')"
+EMBA_WORK="/tmp/emba/${SAFE_JOB:-job}-${SAFE_BUILD:-manual}"
+EMBA_INPUT_DIR="${EMBA_WORK}/input"
+EMBA_LOG_DIR="${EMBA_WORK}/logs"
+
+rm -rf "${EMBA_WORK}"
+mkdir -p "${EMBA_INPUT_DIR}" "${EMBA_LOG_DIR}"
+cp "${TARGET}" "${EMBA_INPUT_DIR}/target"
+
+set +e
+cd /opt/emba
+sudo -n ./emba \
+  -l "${EMBA_LOG_DIR}" \
+  -f "${EMBA_INPUT_DIR}/target" \
+  -p /opt/emba/scan-profiles/full-scan.emba \
+  -y
+EMBA_RC=$?
+set -e
+
+echo "${EMBA_RC}" > "${WORKSPACE}/results/emba/emba-exit-code.txt"
+sudo -n chown -R "$(id -u):$(id -g)" "${EMBA_LOG_DIR}" || true
+cp -a "${EMBA_LOG_DIR}/." "${WORKSPACE}/results/emba/" || true
+rm -rf "${EMBA_WORK}" || true
+exit 0
+'''
+      }
+    }
+
+    stage('Hardening') {
+      when { expression { params.RUN_HARDENING } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+ARTIFACT="${HARDENING_ARTIFACT:-${BUILD_ARTIFACT}}"
+test -e "${ARTIFACT}"
+mkdir -p results/hardening
+checksec --file="${ARTIFACT}" --output=json > results/hardening/checksec.json
+python3 -m json.tool results/hardening/checksec.json >/dev/null
+'''
+      }
+    }
+
+    stage('Persist Artifacts') {
+      agent any
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+PROJECT="${PROJECT_NAME:?PROJECT_NAME is required}"
+BUILD_ID="${BUILD_NUMBER:-manual}"
+DEST="${LAB}/artifacts/${PROJECT}/${BUILD_ID}"
+TMP="${DEST}.tmp"
+
+if [ "${RUN_SCA:-true}" != "true" ]; then
+  export SOURCE_SBOM_REQUIRED=false
+  export VENDOR_MANIFEST_REQUIRED=false
+fi
+
+test -d results
+rm -rf "${TMP}"
+mkdir -p "${TMP}/metadata" "${TMP}/raw"
+cp -a results "${TMP}/raw/results"
+
+python3 .lab/ci/generate-etl-metadata.py \
+  --snapshot "${TMP}" \
+  --dest "${DEST}" \
+  --project "${PROJECT}" \
+  --build "${BUILD_ID}" \
+  --execution-type "${EXECUTION_TYPE:-ci_pipeline}"
+
+rm -rf "${DEST}"
+mv "${TMP}" "${DEST}"
+
+echo "Persisted artifact snapshot: ${DEST}"
+'''
+      }
+    }
+
+    stage('ETL Ingest') {
+      when { expression { params.RUN_ETL } }
+      agent any
+      steps {
+        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+          withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
+            sh '''#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${PROJECT_CONFIG:-.devsecops/project.env}"
+set +a
+
+PROJECT="${PROJECT_NAME:?PROJECT_NAME is required}"
+BUILD_ID="${BUILD_NUMBER:-manual}"
+SNAPSHOT_DIR="${LAB}/artifacts/${PROJECT}/${BUILD_ID}"
+RESULTS_DIR="${SNAPSHOT_DIR}/raw/results"
+
+test -d "${PLATFORM_DIR}"
+test -d "${INGESTOR_SRC}"
+test -f "${INGESTOR_SRC}/ingestor/cli.py"
+test -d "${RESULTS_DIR}"
+
+export PYTHONPATH="${INGESTOR_SRC}"
+python3 - <<'PY'
+import ingestor
+import psycopg2
+print(f"[OK] ingestor={ingestor.__file__}")
+print("[OK] psycopg2 available")
+PY
+
+COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "${GIT_COMMIT:-UNKNOWN}")"
+BRANCH_SAFE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "${BRANCH_NAME:-UNKNOWN}")"
+if [ "${BRANCH_SAFE}" = "HEAD" ] || [ -z "${BRANCH_SAFE}" ]; then
+  BRANCH_SAFE="${BRANCH_NAME:-${GIT_BRANCH:-UNKNOWN}}"
+fi
+REPO_URL_SAFE="$(git config --get remote.origin.url 2>/dev/null || echo "${PROJECT_REPO_URL:-}")"
+
+python3 -m ingestor.cli \
+  --results-dir "${RESULTS_DIR}" \
+  --dsn "${DEVSECOPS_DB_DSN}" \
+  --project-name "${PROJECT_DB_NAME:-${PROJECT_NAME}}" \
+  --repo-url "${REPO_URL_SAFE:-${PROJECT_REPO_URL:-}}" \
+  --branch "${BRANCH_SAFE}" \
+  --commit-sha "${COMMIT_SHA}" \
+  --pipeline-id "${JOB_NAME:-devsecops-ci}" \
+  --build-number "${BUILD_ID}" \
+  --execution-type "${EXECUTION_TYPE:-ci_pipeline}" \
+  --trigger-type jenkins
+'''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      node('') {
+        archiveArtifacts artifacts: 'results/**', allowEmptyArchive: true
+        echo 'DevSecOps results archived.'
+      }
+    }
+    success {
+      echo 'Pipeline OK'
+    }
+    unstable {
+      echo 'Pipeline UNSTABLE: review ETL or integration warnings.'
+    }
+    failure {
+      echo 'Pipeline FAILED'
+    }
+  }
+}

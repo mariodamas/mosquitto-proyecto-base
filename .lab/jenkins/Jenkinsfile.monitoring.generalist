@@ -1,0 +1,314 @@
+pipeline {
+  agent none
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    skipDefaultCheckout(true)
+  }
+
+  triggers {
+    cron('0 8 2 * *')
+  }
+
+  parameters {
+    string(name: 'PROJECT', defaultValue: 'mosquitto', description: 'Project artifact namespace to re-evaluate')
+    string(name: 'PROJECT_DB_NAME', defaultValue: 'mosquitto-proyecto-base', description: 'Project name used by the ETL database')
+    string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
+    string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
+    booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
+    booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest offline reanalysis into PostgreSQL')
+    booleanParam(name: 'RUN_RETENTION', defaultValue: true, description: 'Apply monitoring retention policy')
+  }
+
+  environment {
+    LAB = '/opt/devsecops-lab'
+    TARGET_PROJECT = "${params.PROJECT}"
+    PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
+    INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
+  }
+
+  stages {
+    stage('Checkout') {
+      agent any
+      steps {
+        checkout scm
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+rm -rf monitoring-results
+test -f .lab/ci/generate-etl-metadata.py
+'''
+      }
+    }
+
+    stage('Precheck') {
+      agent any
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+test -d "${LAB}"
+test -d "${LAB}/artifacts/${TARGET_PROJECT}"
+test -d "${LAB}/vuln-dbs/grype"
+test -x "${LAB}/bin/import-vuln-bundle.sh"
+test -x "${LAB}/bin/reevaluate-sboms.sh"
+
+find "${LAB}/artifacts/${TARGET_PROJECT}" -maxdepth 3 -type d | sort | sed -n '1,120p'
+
+if [ -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ]; then
+  cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
+else
+  echo "No active bundle manifest found."
+fi
+'''
+      }
+    }
+
+    stage('Import Bundle') {
+      when { expression { params.IMPORT_LATEST_BUNDLE } }
+      agent any
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+LATEST="$(ls -1t "${LAB}/incoming-vuln-bundles"/vuln-intel-bundle-*.tar.gz 2>/dev/null | head -1 || true)"
+[ -n "${LATEST}" ] || { echo "No incoming bundle found; keeping current DB."; exit 0; }
+test -s "${LATEST}.sha256"
+
+(
+  cd "$(dirname "${LATEST}")"
+  sha256sum -c "$(basename "${LATEST}.sha256")"
+)
+
+LATEST_NAME="$(basename "${LATEST}" .tar.gz)"
+CURRENT_MANIFEST="${LAB}/vuln-dbs/current-bundle-manifest.json"
+CURRENT_NAME="$(python3 - <<PY
+import json
+from pathlib import Path
+p = Path("${CURRENT_MANIFEST}")
+if p.is_file():
+    try:
+        print(json.loads(p.read_text(encoding="utf-8")).get("bundle_name", ""))
+    except Exception:
+        print("")
+else:
+    print("")
+PY
+)"
+
+if [ "${LATEST_NAME}" = "${CURRENT_NAME}" ]; then
+  echo "Latest incoming bundle is already active."
+  exit 0
+fi
+
+"${LAB}/bin/import-vuln-bundle.sh" "${LATEST}"
+[ ! -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ] || cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
+'''
+      }
+    }
+
+    stage('Reevaluate Inventories') {
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103 -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+"${LAB}/bin/reevaluate-sboms.sh" "${TARGET_PROJECT}"
+'''
+      }
+    }
+
+    stage('Prepare ETL Reanalysis') {
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 101:103 -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+RUN_ID="${BUILD_NUMBER:-manual}"
+ETL_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/etl/${RUN_ID}"
+rm -rf "${ETL_ROOT}"
+mkdir -p "${ETL_ROOT}"
+
+for SNAPSHOT in "${LAB}/artifacts/${TARGET_PROJECT}"/*; do
+  [ -d "${SNAPSHOT}/raw/results" ] || continue
+
+  ORIGINAL_BUILD="$(basename "${SNAPSHOT}")"
+  RUN_SNAPSHOT="${ETL_ROOT}/${ORIGINAL_BUILD}"
+  SRC="${SNAPSHOT}/raw/results"
+  OUT="${RUN_SNAPSHOT}/raw/results"
+  META="${RUN_SNAPSHOT}/metadata"
+  COPIED=0
+
+  mkdir -p "${OUT}/sca" "${OUT}/emba/SBOM" "${META}"
+  [ ! -d "${SNAPSHOT}/metadata" ] || cp -a "${SNAPSHOT}/metadata/." "${META}/"
+
+  if [ -s "${SRC}/sca/sbom-source.cyclonedx.json" ]; then
+    cp "${SRC}/sca/sbom-source.cyclonedx.json" "${OUT}/sca/sbom-source.cyclonedx.json"
+    COPIED=1
+  fi
+  if [ -s "${SRC}/sca/vendor-manifest.cdx.json" ]; then
+    cp "${SRC}/sca/vendor-manifest.cdx.json" "${OUT}/sca/vendor-manifest.cdx.json"
+    COPIED=1
+  fi
+  if [ -s "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" ]; then
+    cp "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" "${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json"
+    COPIED=1
+  fi
+
+  if [ "${COPIED}" -eq 0 ]; then
+    echo "Skipping ${ORIGINAL_BUILD}: no SBOM inventories found."
+    rm -rf "${RUN_SNAPSHOT}"
+    continue
+  fi
+
+  grype db status -o json > "${OUT}/sca/grype-db-status.json" || true
+  [ ! -s "${OUT}/sca/sbom-source.cyclonedx.json" ] || grype "sbom:${OUT}/sca/sbom-source.cyclonedx.json" -o json --file "${OUT}/sca/grype-source.json"
+  [ ! -s "${OUT}/sca/vendor-manifest.cdx.json" ] || grype "sbom:${OUT}/sca/vendor-manifest.cdx.json" -o json --file "${OUT}/sca/grype-vendor-manifest.json"
+  [ ! -s "${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json" ] || grype "sbom:${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json" -o json --file "${OUT}/sca/grype-emba.json"
+
+  SOURCE_SBOM_REQUIRED=false \
+  VENDOR_MANIFEST_REQUIRED=false \
+  PROJECT_NAME="${TARGET_PROJECT}" \
+  PROJECT_DB_NAME="${PROJECT_DB_NAME}" \
+  PROJECT_REPO_URL="${PROJECT_REPO_URL}" \
+  EXECUTION_TYPE=offline_reanalysis \
+  python3 .lab/ci/generate-etl-metadata.py \
+    --snapshot "${RUN_SNAPSHOT}" \
+    --project "${TARGET_PROJECT}" \
+    --build "${ORIGINAL_BUILD}" \
+    --execution-type offline_reanalysis
+done
+
+find "${ETL_ROOT}" -maxdepth 4 -type f | sort | sed -n '1,240p' || true
+'''
+      }
+    }
+
+    stage('ETL Offline Reanalysis') {
+      when { expression { params.RUN_ETL } }
+      agent any
+      steps {
+        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+          withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
+            sh '''#!/usr/bin/env bash
+set -euo pipefail
+
+RUN_ID="${BUILD_NUMBER:-manual}"
+ETL_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/etl/${RUN_ID}"
+test -d "${ETL_ROOT}"
+test -d "${INGESTOR_SRC}"
+test -f "${INGESTOR_SRC}/ingestor/cli.py"
+
+export PYTHONPATH="${INGESTOR_SRC}"
+
+json_field() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+field = sys.argv[2]
+if not path.is_file():
+    print("")
+else:
+    try:
+        print(json.loads(path.read_text(encoding="utf-8")).get(field, ""))
+    except Exception:
+        print("")
+PY
+}
+
+for BUILD_DIR in "${ETL_ROOT}"/*; do
+  [ -d "${BUILD_DIR}/raw/results" ] || continue
+
+  ORIGINAL_BUILD="$(basename "${BUILD_DIR}")"
+  BUILD_JSON="${BUILD_DIR}/metadata/build.json"
+
+  COMMIT_SHA="$(json_field "${BUILD_JSON}" git_commit)"
+  BRANCH_SAFE="$(json_field "${BUILD_JSON}" git_branch)"
+  REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
+
+  [ -n "${COMMIT_SHA}" ] || COMMIT_SHA="UNKNOWN"
+  [ -n "${BRANCH_SAFE}" ] || BRANCH_SAFE="UNKNOWN"
+  [ -n "${REPO_URL_SAFE}" ] || REPO_URL_SAFE="${PROJECT_REPO_URL}"
+
+  python3 -m ingestor.cli \
+    --results-dir "${BUILD_DIR}/raw/results" \
+    --dsn "${DEVSECOPS_DB_DSN}" \
+    --project-name "${PROJECT_DB_NAME}" \
+    --repo-url "${REPO_URL_SAFE}" \
+    --branch "${BRANCH_SAFE}" \
+    --commit-sha "${COMMIT_SHA}" \
+    --pipeline-id "${JOB_NAME:-devsecops-monitoring}#${RUN_ID}-offline-reanalysis-${ORIGINAL_BUILD}" \
+    --build-number "${ORIGINAL_BUILD}" \
+    --execution-type offline_reanalysis \
+    --trigger-type scheduled
+done
+'''
+          }
+        }
+      }
+    }
+
+    stage('Retention') {
+      when { expression { params.RUN_RETENTION } }
+      agent {
+        docker {
+          image "${params.AGENT_IMAGE}"
+          reuseNode true
+          args '-u 0:0 -v /opt/devsecops-lab:/opt/devsecops-lab:rw'
+        }
+      }
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+[ ! -x "${LAB}/bin/cleanup-monitoring-retention.sh" ] || "${LAB}/bin/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
+'''
+      }
+    }
+
+    stage('Collect Artifacts') {
+      agent any
+      steps {
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+rm -rf monitoring-results
+mkdir -p monitoring-results
+[ ! -d "${LAB}/monitoring/${TARGET_PROJECT}" ] || cp -a "${LAB}/monitoring/${TARGET_PROJECT}/." monitoring-results/
+find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,300p' || true
+'''
+      }
+    }
+  }
+
+  post {
+    always {
+      node('') {
+        archiveArtifacts artifacts: 'monitoring-results/**', allowEmptyArchive: true
+        echo 'Monitoring artifacts archived.'
+      }
+    }
+    success {
+      echo 'Monitoring job OK'
+    }
+    unstable {
+      echo 'Monitoring job UNSTABLE: review ETL warnings.'
+    }
+    failure {
+      echo 'Monitoring job FAILED'
+    }
+  }
+}
