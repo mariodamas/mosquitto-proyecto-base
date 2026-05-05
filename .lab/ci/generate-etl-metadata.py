@@ -142,8 +142,8 @@ def normalize_branch(value: str) -> str:
 
 def resolve_branch(original_build: Dict[str, Any]) -> str:
     candidates = [
-        env("PROJECT_BRANCH"),
         str(original_build.get("git_branch", "")),
+        env("PROJECT_BRANCH"),
         env("CHANGE_BRANCH"),
         env("BRANCH_NAME"),
         env("GIT_BRANCH"),

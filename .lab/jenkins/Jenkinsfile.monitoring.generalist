@@ -16,7 +16,6 @@ pipeline {
     string(name: 'PROJECT', defaultValue: 'mosquitto', description: 'Project artifact namespace to re-evaluate')
     string(name: 'PROJECT_DB_NAME', defaultValue: 'mosquitto-proyecto-base', description: 'Project name used by the ETL database')
     string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
-    string(name: 'PROJECT_BRANCH', defaultValue: '', description: 'Optional branch override when stored build metadata contains HEAD')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
     choice(name: 'REEVALUATE_SCOPE', choices: ['all', 'latest'], description: 'Re-evaluate every retained build or only the newest stored build')
     booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
@@ -176,7 +175,7 @@ for SNAPSHOT in ${SNAPSHOTS}; do
   META="${RUN_SNAPSHOT}/metadata"
   COPIED=0
 
-  mkdir -p "${OUT}/sca" "${OUT}/emba/SBOM" "${META}"
+  mkdir -p "${OUT}/metadata" "${OUT}/sca" "${OUT}/emba/SBOM" "${META}"
   [ ! -d "${SNAPSHOT}/metadata" ] || cp -a "${SNAPSHOT}/metadata/." "${META}/"
 
   if [ -s "${SRC}/sca/sbom-source.cyclonedx.json" ]; then
@@ -193,7 +192,12 @@ for SNAPSHOT in ${SNAPSHOTS}; do
   fi
 
   if [ -s "${RUN_METADATA}/current-bundle-manifest.json" ]; then
+    cp "${RUN_METADATA}/current-bundle-manifest.json" "${RUN_SNAPSHOT}/metadata/current-bundle-manifest.json"
+    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/current-bundle-manifest.json"
+    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/metadata/current-bundle-manifest.json"
+    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/metadata/vulnerability-bundle.json"
     cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/sca/current-bundle-manifest.json"
+    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/sca/vulnerability-bundle.json"
   fi
 
   if [ "${COPIED}" -eq 0 ]; then
@@ -212,7 +216,7 @@ for SNAPSHOT in ${SNAPSHOTS}; do
   PROJECT_NAME="${TARGET_PROJECT}" \
   PROJECT_DB_NAME="${PROJECT_DB_NAME}" \
   PROJECT_REPO_URL="${PROJECT_REPO_URL}" \
-  PROJECT_BRANCH="${PROJECT_BRANCH}" \
+  PROJECT_BRANCH="${PROJECT_BRANCH:-}" \
   EXECUTION_TYPE=offline_reanalysis \
   python3 .lab/ci/generate-etl-metadata.py \
     --snapshot "${RUN_SNAPSHOT}" \
@@ -339,7 +343,11 @@ done
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-[ ! -x "${LAB}/bin/cleanup-monitoring-retention.sh" ] || "${LAB}/bin/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
+if [ -f "${LAB}/bin/cleanup-monitoring-retention.sh" ]; then
+  bash "${LAB}/bin/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
+else
+  echo "WARNING: cleanup script not found: ${LAB}/bin/cleanup-monitoring-retention.sh"
+fi
 '''
       }
     }
