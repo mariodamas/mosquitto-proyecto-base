@@ -270,7 +270,7 @@ fi
         docker {
           image "${params.AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
@@ -285,6 +285,13 @@ export XDG_CACHE_HOME="${WORKSPACE}/.cache"
 export GRYPE_DB_AUTO_UPDATE=false
 export GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype
 export GRYPE_DB_MAX_ALLOWED_BUILT_AGE="${GRYPE_DB_MAX_ALLOWED_BUILT_AGE:-720h}"
+
+if [ -s /mnt/vuln-dbs/current-bundle-manifest.json ]; then
+  cp /mnt/vuln-dbs/current-bundle-manifest.json results/sca/current-bundle-manifest.json
+  python3 -m json.tool results/sca/current-bundle-manifest.json >/dev/null
+else
+  echo "WARNING: active vulnerability bundle manifest not found; vulnerability_bundle linkage may be absent."
+fi
 
 syft . \
   -o cyclonedx-json=results/sca/sbom-source.cyclonedx.json \
@@ -548,11 +555,13 @@ PROJECT="${PROJECT_NAME:?PROJECT_NAME is required}"
 BUILD_ID="${BUILD_NUMBER:-manual}"
 SNAPSHOT_DIR="${LAB}/artifacts/${PROJECT}/${BUILD_ID}"
 RESULTS_DIR="${SNAPSHOT_DIR}/raw/results"
+BUILD_JSON="${SNAPSHOT_DIR}/metadata/build.json"
 
 test -d "${PLATFORM_DIR}"
 test -d "${INGESTOR_SRC}"
 test -f "${INGESTOR_SRC}/ingestor/cli.py"
 test -d "${RESULTS_DIR}"
+test -s "${BUILD_JSON}"
 
 export PYTHONPATH="${INGESTOR_SRC}"
 python3 - <<'PY'
@@ -561,6 +570,24 @@ import psycopg2
 print(f"[OK] ingestor={ingestor.__file__}")
 print("[OK] psycopg2 available")
 PY
+
+json_field() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+field = sys.argv[2]
+if not path.is_file():
+    print("")
+else:
+    try:
+        print(json.loads(path.read_text(encoding="utf-8")).get(field, ""))
+    except Exception:
+        print("")
+PY
+}
 
 normalize_branch() {
   local branch="${1:-}"
@@ -575,10 +602,16 @@ normalize_branch() {
 }
 
 resolve_branch() {
+  local build_json="$1"
   local branch=""
   local candidate=""
 
-  for candidate in "${CHANGE_BRANCH:-}" "${BRANCH_NAME:-}" "${GIT_BRANCH:-}" "${PROJECT_BRANCH:-}"; do
+  for candidate in \
+    "$(json_field "${build_json}" git_branch)" \
+    "${CHANGE_BRANCH:-}" \
+    "${BRANCH_NAME:-}" \
+    "${GIT_BRANCH:-}" \
+    "${PROJECT_BRANCH:-}"; do
     branch="$(normalize_branch "${candidate}" 2>/dev/null || true)"
     [ -z "${branch}" ] || { printf '%s\n' "${branch}"; return 0; }
   done
@@ -604,9 +637,12 @@ EOF
   printf 'UNKNOWN\n'
 }
 
-COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "${GIT_COMMIT:-UNKNOWN}")"
-BRANCH_SAFE="$(resolve_branch)"
-REPO_URL_SAFE="$(git config --get remote.origin.url 2>/dev/null || echo "${PROJECT_REPO_URL:-}")"
+COMMIT_SHA="$(json_field "${BUILD_JSON}" git_commit)"
+BRANCH_SAFE="$(resolve_branch "${BUILD_JSON}")"
+REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
+
+[ -n "${COMMIT_SHA}" ] || COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "${GIT_COMMIT:-UNKNOWN}")"
+[ -n "${REPO_URL_SAFE}" ] || REPO_URL_SAFE="$(git config --get remote.origin.url 2>/dev/null || echo "${PROJECT_REPO_URL:-}")"
 
 python3 -m ingestor.cli \
   --results-dir "${RESULTS_DIR}" \
