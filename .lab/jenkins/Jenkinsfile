@@ -1034,10 +1034,10 @@ PY
         }
 
         stage('Persist ETL Artifacts') {
-            agent any
+    agent any
 
-            steps {
-                sh '''#!/usr/bin/env bash
+    steps {
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 PROJECT="${PROJECT_NAME:-mosquitto}"
@@ -1085,6 +1085,10 @@ def git(cmd):
     except Exception:
         return ""
 
+branch = os.environ.get("BRANCH_NAME", "") or git(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+if branch == "HEAD" or not branch:
+    branch = os.environ.get("GIT_BRANCH", "") or "UNKNOWN"
+
 metadata = {
     "project": "${PROJECT}",
     "language": os.environ.get("PROJECT_LANGUAGE", "C/C++"),
@@ -1093,7 +1097,7 @@ metadata = {
     "jenkins_build_number": "${BUILD_ID_SAFE}",
     "jenkins_build_url": os.environ.get("BUILD_URL", ""),
     "job_name": os.environ.get("JOB_NAME", ""),
-    "git_branch": os.environ.get("BRANCH_NAME", "") or git(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+    "git_branch": branch,
     "git_commit": os.environ.get("GIT_COMMIT", "") or git(["git", "rev-parse", "HEAD"]),
     "workspace": os.environ.get("WORKSPACE", ""),
     "persisted_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1196,6 +1200,185 @@ registry = {
 print("[OK] metadata/inventories.json generated")
 PY
 
+echo "=== Generating metadata/tool-runs.json ==="
+python3 - <<PY
+import json
+import subprocess
+from pathlib import Path
+
+tmp = Path("${TMP_DEST}")
+results = tmp / "raw" / "results"
+
+def version(cmd):
+    try:
+        return subprocess.check_output(
+            cmd,
+            text=True,
+            stderr=subprocess.STDOUT
+        ).splitlines()[0].strip()
+    except Exception:
+        return "unknown"
+
+def exists(relative_path):
+    return (results / relative_path).is_file()
+
+def exists_dir(relative_path):
+    return (results / relative_path).is_dir()
+
+def status_for_file(relative_path):
+    return "success" if exists(relative_path) else "skipped"
+
+def exit_for_file(relative_path):
+    return 0 if exists(relative_path) else None
+
+def status_for_dir(relative_path):
+    return "success" if exists_dir(relative_path) else "skipped"
+
+def exit_for_dir(relative_path):
+    return 0 if exists_dir(relative_path) else None
+
+def read_int(relative_path):
+    path = results / relative_path
+    if not path.is_file():
+        return None
+    try:
+        return int(path.read_text(encoding="utf-8", errors="replace").strip())
+    except Exception:
+        return None
+
+tool_runs = {
+    "tool_runs": [
+        {
+            "run_key": "codeql",
+            "tool_name": "codeql",
+            "tool_version": version(["/opt/codeql/codeql/codeql", "version"]),
+            "status": status_for_file("sast/codeql.sarif"),
+            "exit_code": exit_for_file("sast/codeql.sarif"),
+            "command_summary": "codeql database analyze build/codeql-db"
+        },
+        {
+            "run_key": "coverity/sast",
+            "tool_name": "coverity-standard",
+            "tool_version": version(["/opt/coverity/bin/cov-analyze", "--version"]),
+            "status": status_for_file("sast/coverity-standard.json"),
+            "exit_code": exit_for_file("sast/coverity-standard.json"),
+            "command_summary": "cov-analyze --all"
+        },
+        {
+            "run_key": "coverity/compliance/cert",
+            "tool_name": "coverity-cert",
+            "tool_version": version(["/opt/coverity/bin/cov-analyze", "--version"]),
+            "status": status_for_file("compliance/coverity-cert.json"),
+            "exit_code": exit_for_file("compliance/coverity-cert.json"),
+            "command_summary": "cov-analyze --coding-standard-config cert-c-all.config"
+        },
+        {
+            "run_key": "coverity/compliance/misra",
+            "tool_name": "coverity-misra",
+            "tool_version": version(["/opt/coverity/bin/cov-analyze", "--version"]),
+            "status": status_for_file("compliance/coverity-misra.json"),
+            "exit_code": exit_for_file("compliance/coverity-misra.json"),
+            "command_summary": "cov-analyze --coding-standard-config misrac2012-all.config"
+        },
+        {
+            "run_key": "gitleaks",
+            "tool_name": "gitleaks",
+            "tool_version": version(["gitleaks", "version"]),
+            "status": status_for_file("sast/gitleaks.json"),
+            "exit_code": exit_for_file("sast/gitleaks.json"),
+            "command_summary": "gitleaks detect --no-git"
+        },
+        {
+            "run_key": "syft",
+            "tool_name": "syft",
+            "tool_version": version(["syft", "version"]),
+            "status": status_for_file("sca/sbom-source.cyclonedx.json"),
+            "exit_code": exit_for_file("sca/sbom-source.cyclonedx.json"),
+            "command_summary": "syft . -o cyclonedx-json"
+        },
+        {
+            "run_key": "vendor-manifest",
+            "tool_name": "vendor-manifest",
+            "tool_version": "curated",
+            "status": status_for_file("sca/vendor-manifest.cdx.json"),
+            "exit_code": exit_for_file("sca/vendor-manifest.cdx.json"),
+            "command_summary": "curated vendor manifest copied from .lab/sca/vendor-manifest.cdx.json"
+        },
+        {
+            "run_key": "grype/source",
+            "tool_name": "grype",
+            "tool_version": version(["grype", "version"]),
+            "status": status_for_file("sca/grype-source.json"),
+            "exit_code": exit_for_file("sca/grype-source.json"),
+            "command_summary": "grype sbom:results/sca/sbom-source.cyclonedx.json"
+        },
+        {
+            "run_key": "grype/vendor",
+            "tool_name": "grype",
+            "tool_version": version(["grype", "version"]),
+            "status": status_for_file("sca/grype-vendor-manifest.json"),
+            "exit_code": exit_for_file("sca/grype-vendor-manifest.json"),
+            "command_summary": "grype sbom:results/sca/vendor-manifest.cdx.json"
+        },
+        {
+            "run_key": "owaspdc",
+            "tool_name": "owaspdc",
+            "tool_version": version(["/opt/dependency-check/bin/dependency-check.sh", "--version"]),
+            "status": status_for_file("sca/owaspdc.json"),
+            "exit_code": exit_for_file("sca/owaspdc.json"),
+            "command_summary": "dependency-check.sh --format JSON --noupdate"
+        },
+        {
+            "run_key": "libfuzzer",
+            "tool_name": "libfuzzer",
+            "tool_version": version(["clang", "--version"]),
+            "status": status_for_dir("fuzzing/libfuzzer"),
+            "exit_code": exit_for_dir("fuzzing/libfuzzer"),
+            "command_summary": "run_campaigns.sh libfuzzer"
+        },
+        {
+            "run_key": "emba/sbom",
+            "tool_name": "emba",
+            "tool_version": "unknown",
+            "status": status_for_file("emba/SBOM/EMBA_cyclonedx_sbom.json"),
+            "exit_code": read_int("emba/emba-exit-code.txt"),
+            "command_summary": "EMBA CycloneDX SBOM generation"
+        },
+        {
+            "run_key": "emba/vex",
+            "tool_name": "emba",
+            "tool_version": "unknown",
+            "status": status_for_file("emba/SBOM/EMBA_cyclonedx_vex_sbom.json"),
+            "exit_code": read_int("emba/emba-exit-code.txt"),
+            "command_summary": "EMBA CycloneDX VEX SBOM generation"
+        },
+        {
+            "run_key": "emba/f50",
+            "tool_name": "emba",
+            "tool_version": "unknown",
+            "status": "success" if exists("emba/f50_base_aggregator.txt") or exists("emba/f50_base_aggregator.csv") or exists("emba/csv_logs/f50_base_aggregator.csv") else "skipped",
+            "exit_code": read_int("emba/emba-exit-code.txt"),
+            "command_summary": "emba full-scan f50 base aggregator"
+        },
+        {
+            "run_key": "checksec",
+            "tool_name": "checksec",
+            "tool_version": version(["checksec", "--version"]),
+            "status": status_for_file("hardening/checksec.json"),
+            "exit_code": exit_for_file("hardening/checksec.json"),
+            "command_summary": "checksec --file=build/src/mosquitto --output=json"
+        }
+    ]
+}
+
+(tmp / "metadata" / "tool-runs.json").write_text(
+    json.dumps(tool_runs, indent=2, ensure_ascii=False) + "\\n",
+    encoding="utf-8"
+)
+
+print("[OK] metadata/tool-runs.json generated")
+PY
+
 echo "=== Validating persisted ETL snapshot ==="
 python3 - <<PY
 import json
@@ -1206,6 +1389,7 @@ tmp = Path("${TMP_DEST}")
 required_json = [
     tmp / "metadata" / "build.json",
     tmp / "metadata" / "inventories.json",
+    tmp / "metadata" / "tool-runs.json",
     tmp / "raw" / "results" / "sca" / "sbom-source.cyclonedx.json",
     tmp / "raw" / "results" / "sca" / "vendor-manifest.cdx.json",
     tmp / "raw" / "results" / "sca" / "grype-source.json",
@@ -1248,9 +1432,9 @@ du -sh "${DEST}"
 
 echo "=== ETL artifact persistence completed ==="
 '''
-            }
-        }
-
+    }
+}
+        
         stage('ETL - Ingest Results') {
             when {
                 expression { return params.RUN_ETL }
