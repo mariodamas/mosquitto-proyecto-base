@@ -16,7 +16,9 @@ pipeline {
     string(name: 'PROJECT', defaultValue: 'mosquitto', description: 'Project artifact namespace to re-evaluate')
     string(name: 'PROJECT_DB_NAME', defaultValue: 'mosquitto-proyecto-base', description: 'Project name used by the ETL database')
     string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
+    string(name: 'PROJECT_BRANCH', defaultValue: '', description: 'Optional branch override when stored build metadata contains HEAD')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
+    choice(name: 'REEVALUATE_SCOPE', choices: ['all', 'latest'], description: 'Re-evaluate every retained build or only the newest stored build')
     booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
     booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest offline reanalysis into PostgreSQL')
     booleanParam(name: 'RUN_RETENTION', defaultValue: true, description: 'Apply monitoring retention policy')
@@ -119,7 +121,11 @@ fi
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-"${LAB}/bin/reevaluate-sboms.sh" "${TARGET_PROJECT}"
+if [ "${REEVALUATE_SCOPE:-all}" = "all" ]; then
+  "${LAB}/bin/reevaluate-sboms.sh" "${TARGET_PROJECT}"
+else
+  echo "REEVALUATE_SCOPE=latest: skipping project-wide reevaluate-sboms.sh; scoped Grype reanalysis runs in the next stage."
+fi
 '''
       }
     }
@@ -141,7 +147,18 @@ ETL_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/etl/${RUN_ID}"
 rm -rf "${ETL_ROOT}"
 mkdir -p "${ETL_ROOT}"
 
-for SNAPSHOT in "${LAB}/artifacts/${TARGET_PROJECT}"/*; do
+if [ "${REEVALUATE_SCOPE:-all}" = "latest" ]; then
+  SNAPSHOTS="$(ls -1dt "${LAB}/artifacts/${TARGET_PROJECT}"/* 2>/dev/null | head -1 || true)"
+else
+  SNAPSHOTS="$(find "${LAB}/artifacts/${TARGET_PROJECT}" -mindepth 1 -maxdepth 1 -type d | sort -V)"
+fi
+
+if [ -z "${SNAPSHOTS}" ]; then
+  echo "No stored builds found under ${LAB}/artifacts/${TARGET_PROJECT}"
+  exit 0
+fi
+
+for SNAPSHOT in ${SNAPSHOTS}; do
   [ -d "${SNAPSHOT}/raw/results" ] || continue
 
   ORIGINAL_BUILD="$(basename "${SNAPSHOT}")"
@@ -183,6 +200,7 @@ for SNAPSHOT in "${LAB}/artifacts/${TARGET_PROJECT}"/*; do
   PROJECT_NAME="${TARGET_PROJECT}" \
   PROJECT_DB_NAME="${PROJECT_DB_NAME}" \
   PROJECT_REPO_URL="${PROJECT_REPO_URL}" \
+  PROJECT_BRANCH="${PROJECT_BRANCH}" \
   EXECUTION_TYPE=offline_reanalysis \
   python3 .lab/ci/generate-etl-metadata.py \
     --snapshot "${RUN_SNAPSHOT}" \
@@ -231,6 +249,38 @@ else:
 PY
 }
 
+normalize_branch() {
+  local branch="${1:-}"
+  branch="${branch#refs/heads/}"
+  branch="${branch#refs/remotes/}"
+  branch="${branch#remotes/}"
+  branch="${branch#origin/}"
+  if [ -z "${branch}" ] || [ "${branch}" = "HEAD" ]; then
+    return 1
+  fi
+  printf '%s\n' "${branch}"
+}
+
+resolve_branch() {
+  local build_json="$1"
+  local branch=""
+  local candidate=""
+
+  for candidate in \
+    "$(json_field "${build_json}" git_branch)" \
+    "${PROJECT_BRANCH:-}" \
+    "${CHANGE_BRANCH:-}" \
+    "${BRANCH_NAME:-}" \
+    "${GIT_BRANCH:-}" \
+    "$(git symbolic-ref --short HEAD 2>/dev/null || true)" \
+    "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"; do
+    branch="$(normalize_branch "${candidate}" 2>/dev/null || true)"
+    [ -z "${branch}" ] || { printf '%s\n' "${branch}"; return 0; }
+  done
+
+  printf 'UNKNOWN\n'
+}
+
 for BUILD_DIR in "${ETL_ROOT}"/*; do
   [ -d "${BUILD_DIR}/raw/results" ] || continue
 
@@ -238,11 +288,10 @@ for BUILD_DIR in "${ETL_ROOT}"/*; do
   BUILD_JSON="${BUILD_DIR}/metadata/build.json"
 
   COMMIT_SHA="$(json_field "${BUILD_JSON}" git_commit)"
-  BRANCH_SAFE="$(json_field "${BUILD_JSON}" git_branch)"
+  BRANCH_SAFE="$(resolve_branch "${BUILD_JSON}")"
   REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
 
   [ -n "${COMMIT_SHA}" ] || COMMIT_SHA="UNKNOWN"
-  [ -n "${BRANCH_SAFE}" ] || BRANCH_SAFE="UNKNOWN"
   [ -n "${REPO_URL_SAFE}" ] || REPO_URL_SAFE="${PROJECT_REPO_URL}"
 
   python3 -m ingestor.cli \

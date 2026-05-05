@@ -123,6 +123,59 @@ def first_non_empty(*values: str) -> str:
     return ""
 
 
+def normalize_branch(value: str) -> str:
+    branch = (value or "").strip()
+    if not branch or branch == "HEAD":
+        return ""
+
+    for prefix in ("refs/heads/", "refs/remotes/", "remotes/", "origin/"):
+        if branch.startswith(prefix):
+            branch = branch[len(prefix) :]
+
+    if branch.startswith("origin/"):
+        branch = branch[len("origin/") :]
+
+    if branch in {"", "HEAD"}:
+        return ""
+    return branch
+
+
+def resolve_branch(original_build: Dict[str, Any]) -> str:
+    candidates = [
+        env("PROJECT_BRANCH"),
+        str(original_build.get("git_branch", "")),
+        env("CHANGE_BRANCH"),
+        env("BRANCH_NAME"),
+        env("GIT_BRANCH"),
+        run_text(["git", "symbolic-ref", "--short", "HEAD"]),
+        run_text(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+    ]
+
+    for candidate in candidates:
+        branch = normalize_branch(candidate)
+        if branch:
+            return branch
+
+    commit = first_non_empty(env("GIT_COMMIT"), run_text(["git", "rev-parse", "HEAD"]))
+    if commit:
+        remote_branch = run_text(
+            [
+                "git",
+                "for-each-ref",
+                "--format=%(refname:short)",
+                "--contains",
+                commit,
+                "refs/remotes/origin",
+            ]
+        )
+        for line in remote_branch.splitlines():
+            branch = normalize_branch(line)
+            if branch and branch != "origin/HEAD":
+                return branch
+
+    return "UNKNOWN"
+
+
 def add_inventory(
     inventories: List[Dict[str, Any]],
     snapshot: Path,
@@ -357,11 +410,7 @@ def main() -> int:
     build_id = first_non_empty(args.build, env("BUILD_NUMBER"), original_build.get("jenkins_build_number", "manual"))
     execution_type = first_non_empty(args.execution_type, env("EXECUTION_TYPE"), original_build.get("execution_type", "ci_pipeline"))
 
-    git_branch = first_non_empty(env("BRANCH_NAME"), run_text(["git", "rev-parse", "--abbrev-ref", "HEAD"]))
-    if git_branch == "HEAD":
-        git_branch = ""
-    git_branch = first_non_empty(git_branch, env("GIT_BRANCH"), original_build.get("git_branch", "UNKNOWN"))
-
+    git_branch = resolve_branch(original_build)
     git_commit = first_non_empty(env("GIT_COMMIT"), run_text(["git", "rev-parse", "HEAD"]), original_build.get("git_commit", "UNKNOWN"))
     repo_url = first_non_empty(env("PROJECT_REPO_URL"), run_text(["git", "config", "--get", "remote.origin.url"]), original_build.get("repo_url", ""))
 

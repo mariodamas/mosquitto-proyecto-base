@@ -562,11 +562,50 @@ print(f"[OK] ingestor={ingestor.__file__}")
 print("[OK] psycopg2 available")
 PY
 
+normalize_branch() {
+  local branch="${1:-}"
+  branch="${branch#refs/heads/}"
+  branch="${branch#refs/remotes/}"
+  branch="${branch#remotes/}"
+  branch="${branch#origin/}"
+  if [ -z "${branch}" ] || [ "${branch}" = "HEAD" ]; then
+    return 1
+  fi
+  printf '%s\n' "${branch}"
+}
+
+resolve_branch() {
+  local branch=""
+  local candidate=""
+
+  for candidate in "${CHANGE_BRANCH:-}" "${BRANCH_NAME:-}" "${GIT_BRANCH:-}" "${PROJECT_BRANCH:-}"; do
+    branch="$(normalize_branch "${candidate}" 2>/dev/null || true)"
+    [ -z "${branch}" ] || { printf '%s\n' "${branch}"; return 0; }
+  done
+
+  for candidate in \
+    "$(git symbolic-ref --short HEAD 2>/dev/null || true)" \
+    "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"; do
+    branch="$(normalize_branch "${candidate}" 2>/dev/null || true)"
+    [ -z "${branch}" ] || { printf '%s\n' "${branch}"; return 0; }
+  done
+
+  local commit="${GIT_COMMIT:-}"
+  [ -n "${commit}" ] || commit="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "${commit}" ]; then
+    while IFS= read -r candidate; do
+      branch="$(normalize_branch "${candidate}" 2>/dev/null || true)"
+      [ -z "${branch}" ] || { printf '%s\n' "${branch}"; return 0; }
+    done <<EOF
+$(git for-each-ref --format='%(refname:short)' --contains "${commit}" refs/remotes/origin 2>/dev/null || true)
+EOF
+  fi
+
+  printf 'UNKNOWN\n'
+}
+
 COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "${GIT_COMMIT:-UNKNOWN}")"
-BRANCH_SAFE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "${BRANCH_NAME:-UNKNOWN}")"
-if [ "${BRANCH_SAFE}" = "HEAD" ] || [ -z "${BRANCH_SAFE}" ]; then
-  BRANCH_SAFE="${BRANCH_NAME:-${GIT_BRANCH:-UNKNOWN}}"
-fi
+BRANCH_SAFE="$(resolve_branch)"
 REPO_URL_SAFE="$(git config --get remote.origin.url 2>/dev/null || echo "${PROJECT_REPO_URL:-}")"
 
 python3 -m ingestor.cli \
