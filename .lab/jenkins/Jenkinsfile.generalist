@@ -562,6 +562,8 @@ test -d "${INGESTOR_SRC}"
 test -f "${INGESTOR_SRC}/ingestor/cli.py"
 test -d "${RESULTS_DIR}"
 test -s "${BUILD_JSON}"
+SOURCE_ROOT="$(pwd -P)"
+test -d "${SOURCE_ROOT}"
 
 export PYTHONPATH="${INGESTOR_SRC}"
 python3 - <<'PY'
@@ -646,6 +648,7 @@ REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
 
 python3 -m ingestor.cli \
   --results-dir "${RESULTS_DIR}" \
+  --source-root "${SOURCE_ROOT}" \
   --dsn "${DEVSECOPS_DB_DSN}" \
   --project-name "${PROJECT_DB_NAME:-${PROJECT_NAME}}" \
   --repo-url "${REPO_URL_SAFE:-${PROJECT_REPO_URL:-}}" \
