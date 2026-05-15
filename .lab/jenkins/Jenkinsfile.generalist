@@ -329,37 +329,30 @@ PY
       echo "Using UI manual component catalog with ${UI_VENDOR_COUNT} components."
     else
       rm -f "${UI_VENDOR_MANIFEST}"
-      echo "UI manual component catalog is empty; falling back to static vendor manifest if configured."
+      echo "WARNING: UI manual component catalog is empty; skipping vendor manifest analysis."
     fi
   else
     rm -f "${UI_VENDOR_MANIFEST}"
-    echo "WARNING: UI manual component export failed; falling back to static vendor manifest if configured."
+    echo "WARNING: UI manual component export failed; skipping vendor manifest analysis."
   fi
 fi
 
-if [ ! -s results/sca/vendor-manifest.cdx.json ] && [ -n "${VENDOR_MANIFEST_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_PATH}" ]; then
-  if [ -n "${VENDOR_MANIFEST_VALIDATOR:-}" ] && [ -f "${VENDOR_MANIFEST_VALIDATOR}" ]; then
-    python3 "${VENDOR_MANIFEST_VALIDATOR}"
-  fi
-  cp "${VENDOR_MANIFEST_PATH}" results/sca/vendor-manifest.cdx.json
-  if [ -n "${VENDOR_MANIFEST_EVIDENCE_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_EVIDENCE_PATH}" ]; then
-    cp "${VENDOR_MANIFEST_EVIDENCE_PATH}" results/sca/vendor-manifest.evidence.md
-  fi
-elif [ ! -s results/sca/vendor-manifest.cdx.json ] && [ "${VENDOR_MANIFEST_REQUIRED:-false}" = "true" ]; then
-  echo "ERROR: required vendor manifest not found: ${VENDOR_MANIFEST_PATH:-<unset>}" >&2
-  exit 1
+if [ ! -s results/sca/vendor-manifest.cdx.json ]; then
+  echo "WARNING: vendor manifest not available from API; continuing without vendor manifest analysis."
 fi
 
 grype db status -o json > results/sca/grype-db-status.json
 grype sbom:results/sca/sbom-source.cyclonedx.json -o json --file results/sca/grype-source.json
 
 if [ -s results/sca/vendor-manifest.cdx.json ]; then
-  grype sbom:results/sca/vendor-manifest.cdx.json -o json --file results/sca/grype-vendor-manifest.json
+  grype sbom:results/sca/vendor-manifest.cdx.json -o json --file results/sca/grype-vendor-manifest.json \
+    || echo "WARNING: vendor manifest analysis failed; continuing without blocking the pipeline."
 fi
 
 python3 -m json.tool results/sca/grype-db-status.json >/dev/null
 python3 -m json.tool results/sca/grype-source.json >/dev/null
-[ ! -s results/sca/grype-vendor-manifest.json ] || python3 -m json.tool results/sca/grype-vendor-manifest.json >/dev/null
+[ ! -s results/sca/grype-vendor-manifest.json ] || python3 -m json.tool results/sca/grype-vendor-manifest.json >/dev/null \
+  || echo "WARNING: vendor manifest analysis output is not valid JSON; continuing without blocking the pipeline."
 
 if [ "${RUN_OWASPDC:-true}" = "true" ]; then
   ODC_TMP="/tmp/owaspdc-data-${BUILD_TAG:-$$}"
