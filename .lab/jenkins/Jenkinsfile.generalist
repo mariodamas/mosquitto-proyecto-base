@@ -271,7 +271,7 @@ fi
         docker {
           image "${params.AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
