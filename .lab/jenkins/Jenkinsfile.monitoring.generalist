@@ -17,6 +17,7 @@ pipeline {
     string(name: 'PROJECT_DB_NAME', defaultValue: 'mosquitto-proyecto-base', description: 'Project name used by the ETL database')
     string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
+    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: '', description: 'Optional DevSecOps API base URL used to export the latest UI manual component catalog')
     choice(name: 'REEVALUATE_SCOPE', choices: ['all', 'latest'], description: 'Re-evaluate every retained build or only the newest stored build')
     booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
     booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest offline reanalysis into PostgreSQL')
@@ -185,6 +186,29 @@ for SNAPSHOT in ${SNAPSHOTS}; do
   if [ -s "${SRC}/sca/vendor-manifest.cdx.json" ]; then
     cp "${SRC}/sca/vendor-manifest.cdx.json" "${OUT}/sca/vendor-manifest.cdx.json"
     COPIED=1
+  fi
+  if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
+    UI_VENDOR_MANIFEST="${OUT}/sca/vendor-manifest.ui.cdx.json"
+    python3 "${PLATFORM_DIR}/scripts/export-manual-vendor-manifest.py" \
+      --api-base-url "${DEVSECOPS_API_BASE_URL}" \
+      --project-name "${PROJECT_DB_NAME:-${TARGET_PROJECT}}" \
+      --output "${UI_VENDOR_MANIFEST}"
+    UI_VENDOR_COUNT="$(python3 - "${UI_VENDOR_MANIFEST}" <<'PY'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+print(len(json.loads(path.read_text(encoding="utf-8")).get("components", [])))
+PY
+)"
+    if [ "${UI_VENDOR_COUNT}" -gt 0 ]; then
+      mv "${UI_VENDOR_MANIFEST}" "${OUT}/sca/vendor-manifest.cdx.json"
+      COPIED=1
+      echo "Using latest UI manual component catalog with ${UI_VENDOR_COUNT} components for ${ORIGINAL_BUILD}."
+    else
+      rm -f "${UI_VENDOR_MANIFEST}" "${OUT}/sca/vendor-manifest.cdx.json"
+      echo "Latest UI manual component catalog is empty for ${ORIGINAL_BUILD}."
+    fi
   fi
   if [ -s "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" ]; then
     cp "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" "${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json"

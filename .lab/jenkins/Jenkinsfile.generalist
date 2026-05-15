@@ -11,6 +11,7 @@ pipeline {
   parameters {
     string(name: 'PROJECT_CONFIG', defaultValue: '.devsecops/project.env', description: 'Project DevSecOps contract file')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
+    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: '', description: 'Optional DevSecOps API base URL used to export the UI manual component catalog')
 
     booleanParam(name: 'RUN_SECRETS', defaultValue: true, description: 'Run Gitleaks')
     booleanParam(name: 'RUN_CODEQL', defaultValue: true, description: 'Run CodeQL SAST')
@@ -309,7 +310,30 @@ syft . \
 
 python3 -m json.tool results/sca/sbom-source.cyclonedx.json >/dev/null
 
-if [ -n "${VENDOR_MANIFEST_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_PATH}" ]; then
+if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
+  UI_VENDOR_MANIFEST="results/sca/vendor-manifest.ui.cdx.json"
+  python3 "${PLATFORM_DIR}/scripts/export-manual-vendor-manifest.py" \
+    --api-base-url "${DEVSECOPS_API_BASE_URL}" \
+    --project-name "${PROJECT_DB_NAME:-${PROJECT_NAME}}" \
+    --output "${UI_VENDOR_MANIFEST}"
+  UI_VENDOR_COUNT="$(python3 - "${UI_VENDOR_MANIFEST}" <<'PY'
+import json
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+print(len(json.loads(path.read_text(encoding="utf-8")).get("components", [])))
+PY
+)"
+  if [ "${UI_VENDOR_COUNT}" -gt 0 ]; then
+    mv "${UI_VENDOR_MANIFEST}" results/sca/vendor-manifest.cdx.json
+    echo "Using UI manual component catalog with ${UI_VENDOR_COUNT} components."
+  else
+    rm -f "${UI_VENDOR_MANIFEST}"
+    echo "UI manual component catalog is empty; falling back to static vendor manifest if configured."
+  fi
+fi
+
+if [ ! -s results/sca/vendor-manifest.cdx.json ] && [ -n "${VENDOR_MANIFEST_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_PATH}" ]; then
   if [ -n "${VENDOR_MANIFEST_VALIDATOR:-}" ] && [ -f "${VENDOR_MANIFEST_VALIDATOR}" ]; then
     python3 "${VENDOR_MANIFEST_VALIDATOR}"
   fi
@@ -317,7 +341,7 @@ if [ -n "${VENDOR_MANIFEST_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_PATH}" ]; then
   if [ -n "${VENDOR_MANIFEST_EVIDENCE_PATH:-}" ] && [ -s "${VENDOR_MANIFEST_EVIDENCE_PATH}" ]; then
     cp "${VENDOR_MANIFEST_EVIDENCE_PATH}" results/sca/vendor-manifest.evidence.md
   fi
-elif [ "${VENDOR_MANIFEST_REQUIRED:-false}" = "true" ]; then
+elif [ ! -s results/sca/vendor-manifest.cdx.json ] && [ "${VENDOR_MANIFEST_REQUIRED:-false}" = "true" ]; then
   echo "ERROR: required vendor manifest not found: ${VENDOR_MANIFEST_PATH:-<unset>}" >&2
   exit 1
 fi
