@@ -311,12 +311,12 @@ syft . \
 python3 -m json.tool results/sca/sbom-source.cyclonedx.json >/dev/null
 
 if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
-  UI_VENDOR_MANIFEST="results/sca/vendor-manifest.ui.cdx.json"
-  if python3 "${PLATFORM_DIR}/scripts/export-manual-vendor-manifest.py" \
+  UI_MANUAL_MANIFEST="results/sca/manual-manifest.ui.cdx.json"
+  if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
     --api-base-url "${DEVSECOPS_API_BASE_URL}" \
     --project-name "${PROJECT_DB_NAME:-${PROJECT_NAME}}" \
-    --output "${UI_VENDOR_MANIFEST}"; then
-    UI_VENDOR_COUNT="$(python3 - "${UI_VENDOR_MANIFEST}" <<'PY'
+    --output "${UI_MANUAL_MANIFEST}"; then
+    UI_MANUAL_COUNT="$(python3 - "${UI_MANUAL_MANIFEST}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -324,35 +324,35 @@ path = Path(sys.argv[1])
 print(len(json.loads(path.read_text(encoding="utf-8")).get("components", [])))
 PY
     )"
-    if [ "${UI_VENDOR_COUNT}" -gt 0 ]; then
-      mv "${UI_VENDOR_MANIFEST}" results/sca/vendor-manifest.cdx.json
-      echo "Using UI manual component catalog with ${UI_VENDOR_COUNT} components."
+    if [ "${UI_MANUAL_COUNT}" -gt 0 ]; then
+      mv "${UI_MANUAL_MANIFEST}" results/sca/manual-manifest.cdx.json
+      echo "Using UI manual component catalog with ${UI_MANUAL_COUNT} components."
     else
-      rm -f "${UI_VENDOR_MANIFEST}"
-      echo "WARNING: UI manual component catalog is empty; skipping vendor manifest analysis."
+      rm -f "${UI_MANUAL_MANIFEST}"
+      echo "WARNING: UI manual component catalog is empty; skipping manual manifest analysis."
     fi
   else
-    rm -f "${UI_VENDOR_MANIFEST}"
-    echo "WARNING: UI manual component export failed; skipping vendor manifest analysis."
+    rm -f "${UI_MANUAL_MANIFEST}"
+    echo "WARNING: UI manual component export failed; skipping manual manifest analysis."
   fi
 fi
 
-if [ ! -s results/sca/vendor-manifest.cdx.json ]; then
-  echo "WARNING: vendor manifest not available from API; continuing without vendor manifest analysis."
+if [ ! -s results/sca/manual-manifest.cdx.json ]; then
+  echo "WARNING: manual manifest not available from API; continuing without manual manifest analysis."
 fi
 
 grype db status -o json > results/sca/grype-db-status.json
 grype sbom:results/sca/sbom-source.cyclonedx.json -o json --file results/sca/grype-source.json
 
-if [ -s results/sca/vendor-manifest.cdx.json ]; then
-  grype sbom:results/sca/vendor-manifest.cdx.json -o json --file results/sca/grype-vendor-manifest.json \
-    || echo "WARNING: vendor manifest analysis failed; continuing without blocking the pipeline."
+if [ -s results/sca/manual-manifest.cdx.json ]; then
+  grype sbom:results/sca/manual-manifest.cdx.json -o json --file results/sca/grype-manual-manifest.json \
+    || echo "WARNING: manual manifest analysis failed; continuing without blocking the pipeline."
 fi
 
 python3 -m json.tool results/sca/grype-db-status.json >/dev/null
 python3 -m json.tool results/sca/grype-source.json >/dev/null
-[ ! -s results/sca/grype-vendor-manifest.json ] || python3 -m json.tool results/sca/grype-vendor-manifest.json >/dev/null \
-  || echo "WARNING: vendor manifest analysis output is not valid JSON; continuing without blocking the pipeline."
+[ ! -s results/sca/grype-manual-manifest.json ] || python3 -m json.tool results/sca/grype-manual-manifest.json >/dev/null \
+  || echo "WARNING: manual manifest analysis output is not valid JSON; continuing without blocking the pipeline."
 
 if [ "${RUN_OWASPDC:-true}" = "true" ]; then
   ODC_TMP="/tmp/owaspdc-data-${BUILD_TAG:-$$}"
@@ -537,7 +537,7 @@ TMP="${DEST}.tmp"
 
 if [ "${RUN_SCA:-true}" != "true" ]; then
   export SOURCE_SBOM_REQUIRED=false
-  export VENDOR_MANIFEST_REQUIRED=false
+  export MANUAL_MANIFEST_REQUIRED=false
 fi
 
 test -d results

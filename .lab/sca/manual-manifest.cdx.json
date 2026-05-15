@@ -8,7 +8,7 @@
     "tools": [
       {
         "vendor": "mariodamas",
-        "name": "lab-vendor-manifest",
+        "name": "lab-manual-manifest",
         "version": "2.2.0"
       }
     ],

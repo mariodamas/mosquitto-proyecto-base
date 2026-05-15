@@ -52,7 +52,7 @@ embedded C/C++ projects where package managers are absent.
 Snyk `--unmanaged`, Syft, and Grype (fed the Syft SBOM) all returned 0 detections
 for cJSON 1.7.14. This confirmed the canonical C/C++ SCA blind spot. The
 authoritative detection path is Grype scanning the hand-curated vendor manifest
-at `.lab/sca/vendor-manifest.cdx.json`. This gap is documented in
+at `.lab/sca/manual-manifest.cdx.json`. This gap is documented in
 `.lab/docs/lab-decisions.md` as a pipeline-risk finding.
 
 ## Integration with the lab build

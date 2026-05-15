@@ -182,7 +182,7 @@ the components the tooling cannot discover.
 
 ### What the manifest covers
 
-`.lab/sca/vendor-manifest.cdx.json` (CycloneDX 1.4) declares three components
+`.lab/sca/manual-manifest.cdx.json` (CycloneDX 1.4) declares three components
 identified by manual inspection of the source tree:
 
 | Component | Version | Location | Detection method |
@@ -201,7 +201,7 @@ scanners (Grype, OSV-Scanner) can look up matching CVEs.
 1. **Scan 1** — Syft SBOM (`sbom-cyclonedx.json`): validates that Grype runs
    correctly and reflects the automated tooling result. Expected result: 0 or
    very few matches.
-2. **Scan 2** — vendor manifest (`vendor-manifest.cdx.json`): queries Grype
+2. **Scan 2** — vendor manifest (`manual-manifest.cdx.json`): queries Grype
    against the curated component list. Expected result: CVE matches for
    cJSON 1.7.14 (if the version has known advisories in the Grype database).
 

@@ -9,9 +9,9 @@ This directory contains the curated SBOM manifest and supporting artefacts for t
 
 | File | Purpose |
 |------|---------|
-| `vendor-manifest.cdx.json` | Hand-curated CycloneDX 1.4 SBOM for vendored C/C++ dependencies |
-| `vendor-manifest.evidence.md` | Human-readable evidence table (versions, paths, hashes, justifications) |
-| `validate_vendor_manifest.py` | Python validation script; exits 0 on success |
+| `manual-manifest.cdx.json` | Hand-curated CycloneDX 1.4 SBOM for vendored C/C++ dependencies |
+| `manual-manifest.evidence.md` | Human-readable evidence table (versions, paths, hashes, justifications) |
+| `validate_manual_manifest.py` | Python validation script; exits 0 on success |
 | `README.md` | This document |
 
 ---
@@ -53,7 +53,7 @@ Both artefacts are complementary. The pipeline scans both:
 
 ```
 grype sbom:results/sca/sbom-source.cyclonedx.json      # auto-generated
-grype sbom:.lab/sca/vendor-manifest.cdx.json            # curated
+grype sbom:.lab/sca/manual-manifest.cdx.json            # curated
 ```
 
 Results are merged in Dependency-Track for a unified view.
@@ -90,7 +90,7 @@ ensuring all components appear in the scan inventory.
 
 ## Component roles
 
-Three distinct roles are used in `vendor-manifest.cdx.json`:
+Three distinct roles are used in `manual-manifest.cdx.json`:
 
 ### `bundled-dependency`
 Third-party code that is copied into the repository and compiled into every
@@ -134,13 +134,13 @@ C/C++ dependencies and their CVEs.
 Run the Python validation script from the repository root:
 
 ```bash
-python3 .lab/sca/validate_vendor_manifest.py
+python3 .lab/sca/validate_manual_manifest.py
 ```
 
 Or from within this directory:
 
 ```bash
-python3 validate_vendor_manifest.py
+python3 validate_manual_manifest.py
 ```
 
 The script checks:
@@ -165,15 +165,15 @@ Exit code `0` = valid. Exit code `1` = validation errors found.
 Scan the curated manifest directly:
 
 ```bash
-grype sbom:.lab/sca/vendor-manifest.cdx.json
+grype sbom:.lab/sca/manual-manifest.cdx.json
 ```
 
 Save results to a file (JSON format, compatible with Dependency-Track):
 
 ```bash
-grype sbom:.lab/sca/vendor-manifest.cdx.json \
+grype sbom:.lab/sca/manual-manifest.cdx.json \
   --output json \
-  --file results/sca/grype-vendor-manifest.json
+  --file results/sca/grype-manual-manifest.json
 ```
 
 In air-gapped environments with an offline DB, set:
@@ -242,9 +242,9 @@ They are SBOM-only fixtures — no source files are present in the repository.
 
 ```bash
 export GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h
-grype sbom:.lab/sca/vendor-manifest.cdx.json \
+grype sbom:.lab/sca/manual-manifest.cdx.json \
   --output json \
-  --file results/sca/grype-vendor-manifest.json
+  --file results/sca/grype-manual-manifest.json
 ```
 
 Set `GRYPE_DB_MAX_ALLOWED_BUILT_AGE` to a sufficiently large value (e.g., `720h`
@@ -256,20 +256,20 @@ the network. The pipeline sets this variable in the SCA stage environment.
 ## How to scan with jq (syntax check only)
 
 ```bash
-jq empty .lab/sca/vendor-manifest.cdx.json && echo "JSON valid"
+jq empty .lab/sca/manual-manifest.cdx.json && echo "JSON valid"
 ```
 
 If `jq` is not available, use Python:
 
 ```bash
-python3 -c "import json,sys; json.load(open('.lab/sca/vendor-manifest.cdx.json')); print('JSON valid')"
+python3 -c "import json,sys; json.load(open('.lab/sca/manual-manifest.cdx.json')); print('JSON valid')"
 ```
 
 ---
 
 ## Maintaining the manifest
 
-Update `vendor-manifest.cdx.json` and `vendor-manifest.evidence.md` whenever:
+Update `manual-manifest.cdx.json` and `manual-manifest.evidence.md` whenever:
 
 1. A vendored dependency is upgraded or replaced in `deps/` or `.lab/vendor/`.
 2. A new vendored dependency is added to the project.
@@ -287,8 +287,8 @@ The Jenkins pipeline (`Jenkinsfile`) scans this manifest as part of the SCA stag
 It first validates the manifest, then runs Grype against it:
 
 ```groovy
-sh 'python3 .lab/sca/validate_vendor_manifest.py'
-sh 'grype sbom:.lab/sca/vendor-manifest.cdx.json --output json --file results/sca/grype-vendor-manifest.json'
+sh 'python3 .lab/sca/validate_manual_manifest.py'
+sh 'grype sbom:.lab/sca/manual-manifest.cdx.json --output json --file results/sca/grype-manual-manifest.json'
 ```
 
 Results are archived alongside the Syft auto-SBOM scan results. Both are uploaded

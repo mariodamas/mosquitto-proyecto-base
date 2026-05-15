@@ -183,17 +183,17 @@ for SNAPSHOT in ${SNAPSHOTS}; do
     cp "${SRC}/sca/sbom-source.cyclonedx.json" "${OUT}/sca/sbom-source.cyclonedx.json"
     COPIED=1
   fi
-  if [ -s "${SRC}/sca/vendor-manifest.cdx.json" ]; then
-    cp "${SRC}/sca/vendor-manifest.cdx.json" "${OUT}/sca/vendor-manifest.cdx.json"
+  if [ -s "${SRC}/sca/manual-manifest.cdx.json" ]; then
+    cp "${SRC}/sca/manual-manifest.cdx.json" "${OUT}/sca/manual-manifest.cdx.json"
     COPIED=1
   fi
   if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
-    UI_VENDOR_MANIFEST="${OUT}/sca/vendor-manifest.ui.cdx.json"
-    if python3 "${PLATFORM_DIR}/scripts/export-manual-vendor-manifest.py" \
+    UI_MANUAL_MANIFEST="${OUT}/sca/manual-manifest.ui.cdx.json"
+    if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
       --api-base-url "${DEVSECOPS_API_BASE_URL}" \
       --project-name "${PROJECT_DB_NAME:-${TARGET_PROJECT}}" \
-      --output "${UI_VENDOR_MANIFEST}"; then
-      UI_VENDOR_COUNT="$(python3 - "${UI_VENDOR_MANIFEST}" <<'PY'
+      --output "${UI_MANUAL_MANIFEST}"; then
+      UI_MANUAL_COUNT="$(python3 - "${UI_MANUAL_MANIFEST}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -201,17 +201,17 @@ path = Path(sys.argv[1])
 print(len(json.loads(path.read_text(encoding="utf-8")).get("components", [])))
 PY
       )"
-      if [ "${UI_VENDOR_COUNT}" -gt 0 ]; then
-        mv "${UI_VENDOR_MANIFEST}" "${OUT}/sca/vendor-manifest.cdx.json"
+      if [ "${UI_MANUAL_COUNT}" -gt 0 ]; then
+        mv "${UI_MANUAL_MANIFEST}" "${OUT}/sca/manual-manifest.cdx.json"
         COPIED=1
-        echo "Using latest UI manual component catalog with ${UI_VENDOR_COUNT} components for ${ORIGINAL_BUILD}."
+        echo "Using latest UI manual component catalog with ${UI_MANUAL_COUNT} components for ${ORIGINAL_BUILD}."
       else
-        rm -f "${UI_VENDOR_MANIFEST}" "${OUT}/sca/vendor-manifest.cdx.json"
-        echo "Latest UI manual component catalog is empty for ${ORIGINAL_BUILD}; skipping vendor manifest analysis."
+        rm -f "${UI_MANUAL_MANIFEST}" "${OUT}/sca/manual-manifest.cdx.json"
+        echo "Latest UI manual component catalog is empty for ${ORIGINAL_BUILD}; skipping manual manifest analysis."
       fi
     else
-      rm -f "${UI_VENDOR_MANIFEST}" "${OUT}/sca/vendor-manifest.cdx.json"
-      echo "WARNING: UI manual component export failed for ${ORIGINAL_BUILD}; skipping vendor manifest analysis."
+      rm -f "${UI_MANUAL_MANIFEST}" "${OUT}/sca/manual-manifest.cdx.json"
+      echo "WARNING: UI manual component export failed for ${ORIGINAL_BUILD}; skipping manual manifest analysis."
     fi
   fi
   if [ -s "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" ]; then
@@ -236,12 +236,12 @@ PY
 
   grype db status -o json > "${OUT}/sca/grype-db-status.json" || true
   [ ! -s "${OUT}/sca/sbom-source.cyclonedx.json" ] || grype "sbom:${OUT}/sca/sbom-source.cyclonedx.json" -o json --file "${OUT}/sca/grype-source.json"
-  [ ! -s "${OUT}/sca/vendor-manifest.cdx.json" ] || grype "sbom:${OUT}/sca/vendor-manifest.cdx.json" -o json --file "${OUT}/sca/grype-vendor-manifest.json" \
-    || echo "WARNING: vendor manifest analysis failed for ${ORIGINAL_BUILD}; continuing without blocking the pipeline."
+  [ ! -s "${OUT}/sca/manual-manifest.cdx.json" ] || grype "sbom:${OUT}/sca/manual-manifest.cdx.json" -o json --file "${OUT}/sca/grype-manual-manifest.json" \
+    || echo "WARNING: manual manifest analysis failed for ${ORIGINAL_BUILD}; continuing without blocking the pipeline."
   [ ! -s "${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json" ] || grype "sbom:${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json" -o json --file "${OUT}/sca/grype-emba.json"
 
   SOURCE_SBOM_REQUIRED=false \
-  VENDOR_MANIFEST_REQUIRED=false \
+  MANUAL_MANIFEST_REQUIRED=false \
   PROJECT_NAME="${TARGET_PROJECT}" \
   PROJECT_DB_NAME="${PROJECT_DB_NAME}" \
   PROJECT_REPO_URL="${PROJECT_REPO_URL}" \

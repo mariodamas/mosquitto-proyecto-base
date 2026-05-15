@@ -287,12 +287,12 @@ def build_tool_runs(results: Path) -> Dict[str, Any]:
         ),
         tool_run(
             results,
-            "vendor-manifest",
-            "vendor-manifest",
+            "manual-manifest",
+            "manual-manifest",
             "curated",
-            status_for_file(results, "sca/vendor-manifest.cdx.json"),
-            exit_for_file(results, "sca/vendor-manifest.cdx.json"),
-            "curated vendor manifest copied from project contract",
+            status_for_file(results, "sca/manual-manifest.cdx.json"),
+            exit_for_file(results, "sca/manual-manifest.cdx.json"),
+            "curated manual manifest copied from project contract",
         ),
         tool_run(
             results,
@@ -305,12 +305,12 @@ def build_tool_runs(results: Path) -> Dict[str, Any]:
         ),
         tool_run(
             results,
-            "grype/vendor",
+            "grype/manual",
             "grype",
             version(["grype", "version"]),
-            status_for_file(results, "sca/grype-vendor-manifest.json"),
-            exit_for_file(results, "sca/grype-vendor-manifest.json"),
-            "grype vendor manifest scan",
+            status_for_file(results, "sca/grype-manual-manifest.json"),
+            exit_for_file(results, "sca/grype-manual-manifest.json"),
+            "grype manual manifest scan",
         ),
         tool_run(
             results,
@@ -436,7 +436,7 @@ def main() -> int:
     write_json(metadata_dir / "build.json", build_json)
 
     source_required = bool_env("SOURCE_SBOM_REQUIRED", True)
-    vendor_required = bool_env("VENDOR_MANIFEST_REQUIRED", False)
+    manual_required = bool_env("MANUAL_MANIFEST_REQUIRED", False)
 
     inventories: List[Dict[str, Any]] = []
     add_inventory(
@@ -456,14 +456,14 @@ def main() -> int:
         inventories,
         snapshot,
         dest,
-        "vendor_manifest",
-        "curated-vendor-manifest",
-        "sca/vendor-manifest.cdx.json",
-        "vendor_manifest",
-        "VENDOR_MANIFEST",
+        "manual_manifest",
+        "curated-manual-manifest",
+        "sca/manual-manifest.cdx.json",
+        "manual_manifest",
+        "MANUAL_MANIFEST",
         "curated_dependency_inventory",
-        "SCA_VENDOR_MANIFEST",
-        vendor_required,
+        "SCA_MANUAL_MANIFEST",
+        manual_required,
     )
     add_inventory(
         inventories,
@@ -492,7 +492,7 @@ def main() -> int:
 
     inventory_relative_paths = {
         "source_sbom": "sca/sbom-source.cyclonedx.json",
-        "vendor_manifest": "sca/vendor-manifest.cdx.json",
+        "manual_manifest": "sca/manual-manifest.cdx.json",
         "emba_sbom": "emba/SBOM/EMBA_cyclonedx_sbom.json",
     }
     required_missing = []
@@ -512,7 +512,7 @@ def main() -> int:
         "compliance/coverity-misra.json",
         "sca/grype-db-status.json",
         "sca/grype-source.json",
-        "sca/grype-vendor-manifest.json",
+        "sca/grype-manual-manifest.json",
         "sca/grype-emba.json",
         "sca/owaspdc.json",
         "hardening/checksec.json",
@@ -521,7 +521,7 @@ def main() -> int:
 
     for relative in [
         "sca/sbom-source.cyclonedx.json",
-        "sca/vendor-manifest.cdx.json",
+        "sca/manual-manifest.cdx.json",
         "emba/SBOM/EMBA_cyclonedx_sbom.json",
     ]:
         validate_cyclonedx_if_present(results / relative)

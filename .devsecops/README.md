@@ -19,7 +19,7 @@ Required build actions:
 - `coverity-configure`
 - `coverity-build`
 
-The Jenkinsfile treats `.lab/sca/vendor-manifest.cdx.json` as a project input
+The Jenkinsfile treats `.lab/sca/manual-manifest.cdx.json` as a project input
 because Mosquitto has curated vendored dependency evidence. Other projects can
-point `VENDOR_MANIFEST_PATH` to their own manifest, or set
-`VENDOR_MANIFEST_REQUIRED=false`.
+point `MANUAL_MANIFEST_PATH` to their own manifest, or set
+`MANUAL_MANIFEST_REQUIRED=false`.

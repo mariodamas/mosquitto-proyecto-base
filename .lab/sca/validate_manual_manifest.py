@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-validate_vendor_manifest.py
-Validates .lab/sca/vendor-manifest.cdx.json against the project's CycloneDX
+validate_manual_manifest.py
+Validates .lab/sca/manual-manifest.cdx.json against the project's CycloneDX
 curated-manifest conventions.
 
 Exit codes:
@@ -14,7 +14,7 @@ import sys
 import os
 
 MANIFEST_PATH = os.path.join(
-    os.path.dirname(__file__), "vendor-manifest.cdx.json"
+    os.path.dirname(__file__), "manual-manifest.cdx.json"
 )
 
 REQUIRED_COMPONENT_FIELDS = ("bom-ref", "name", "version", "properties")

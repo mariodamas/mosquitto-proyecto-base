@@ -1,13 +1,13 @@
 # SCA Vendor Manifest — Component Evidence
 
-> **Document:** `.lab/sca/vendor-manifest.evidence.md`
-> **Manifest:** `.lab/sca/vendor-manifest.cdx.json`
+> **Document:** `.lab/sca/manual-manifest.evidence.md`
+> **Manifest:** `.lab/sca/manual-manifest.cdx.json`
 > **Project:** `mosquitto-proyecto-base` (Eclipse Mosquitto 2.0.18 DevSecOps lab fork)
 > **Last updated:** 2026-04-26
 > **Reviewed by:** mariodamas
 
 This file provides the human-readable evidence trail for every component declared in
-`vendor-manifest.cdx.json`. It exists because automated SBOM tools (Syft, Snyk
+`manual-manifest.cdx.json`. It exists because automated SBOM tools (Syft, Snyk
 `--unmanaged`) cannot reliably detect header-only C/C++ dependencies or dependencies
 disclosed only in build manifests such as `snap/snapcraft.yaml`.
 
