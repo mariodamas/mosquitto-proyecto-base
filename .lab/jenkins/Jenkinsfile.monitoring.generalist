@@ -17,7 +17,7 @@ pipeline {
     string(name: 'PROJECT_DB_NAME', defaultValue: 'mosquitto-proyecto-base', description: 'Project name used by the ETL database')
     string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
-    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: '', description: 'Optional DevSecOps API base URL used to export the latest UI manual component catalog')
+    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: 'http://localhost:8000/api/v1', description: 'DevSecOps API base URL used to export the latest UI manual component catalog')
     choice(name: 'REEVALUATE_SCOPE', choices: ['all', 'latest'], description: 'Re-evaluate every retained build or only the newest stored build')
     booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
     booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest offline reanalysis into PostgreSQL')
@@ -188,6 +188,8 @@ for SNAPSHOT in ${SNAPSHOTS}; do
     COPIED=1
   fi
   if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
+    export NO_PROXY="${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,::1"
+    export no_proxy="${no_proxy:+${no_proxy},}localhost,127.0.0.1,::1"
     UI_MANUAL_MANIFEST="${OUT}/sca/manual-manifest.ui.cdx.json"
     if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
       --api-base-url "${DEVSECOPS_API_BASE_URL}" \

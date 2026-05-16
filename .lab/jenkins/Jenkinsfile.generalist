@@ -11,7 +11,7 @@ pipeline {
   parameters {
     string(name: 'PROJECT_CONFIG', defaultValue: '.devsecops/project.env', description: 'Project DevSecOps contract file')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
-    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: '', description: 'Optional DevSecOps API base URL used to export the UI manual component catalog')
+    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: 'http://localhost:8000/api/v1', description: 'DevSecOps API base URL used to export the UI manual component catalog')
 
     booleanParam(name: 'RUN_SECRETS', defaultValue: true, description: 'Run Gitleaks')
     booleanParam(name: 'RUN_CODEQL', defaultValue: true, description: 'Run CodeQL SAST')
@@ -311,6 +311,8 @@ syft . \
 python3 -m json.tool results/sca/sbom-source.cyclonedx.json >/dev/null
 
 if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
+  export NO_PROXY="${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,::1"
+  export no_proxy="${no_proxy:+${no_proxy},}localhost,127.0.0.1,::1"
   UI_MANUAL_MANIFEST="results/sca/manual-manifest.ui.cdx.json"
   if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
     --api-base-url "${DEVSECOPS_API_BASE_URL}" \
