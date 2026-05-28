@@ -18,7 +18,7 @@ pipeline {
     string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
     string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
     string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: 'http://localhost:8000/api/v1', description: 'DevSecOps API base URL used to export the latest UI manual component catalog')
-    choice(name: 'REEVALUATE_SCOPE', choices: ['all', 'latest'], description: 'Re-evaluate every retained build or only the newest stored build')
+    choice(name: 'REEVALUATE_SCOPE', choices: ['latest', 'all'], description: 'Re-evaluate every retained build or only the newest stored build')
     booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
     booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest offline reanalysis into PostgreSQL')
     booleanParam(name: 'RUN_RETENTION', defaultValue: true, description: 'Apply monitoring retention policy')
@@ -340,9 +340,12 @@ for BUILD_DIR in "${ETL_ROOT}"/*; do
   COMMIT_SHA="$(json_field "${BUILD_JSON}" git_commit)"
   BRANCH_SAFE="$(resolve_branch "${BUILD_JSON}")"
   REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
+  SOURCE_BUILD_NUMBER="$(json_field "${BUILD_JSON}" jenkins_build_number)"
+  SOURCE_PIPELINE_ID="$(json_field "${BUILD_JSON}" job_name)"
 
   [ -n "${COMMIT_SHA}" ] || COMMIT_SHA="UNKNOWN"
   [ -n "${REPO_URL_SAFE}" ] || REPO_URL_SAFE="${PROJECT_REPO_URL}"
+  [ -n "${SOURCE_BUILD_NUMBER}" ] || SOURCE_BUILD_NUMBER="${ORIGINAL_BUILD}"
 
   python3 -m ingestor.cli \
     --results-dir "${BUILD_DIR}/raw/results" \
@@ -351,8 +354,10 @@ for BUILD_DIR in "${ETL_ROOT}"/*; do
     --repo-url "${REPO_URL_SAFE}" \
     --branch "${BRANCH_SAFE}" \
     --commit-sha "${COMMIT_SHA}" \
-    --pipeline-id "${JOB_NAME:-devsecops-monitoring}#${RUN_ID}-offline-reanalysis-${ORIGINAL_BUILD}" \
-    --build-number "${ORIGINAL_BUILD}" \
+    --pipeline-id "${JOB_NAME:-devsecops-monitoring}" \
+    --build-number "${RUN_ID}" \
+    --source-pipeline-id "${SOURCE_PIPELINE_ID}" \
+    --source-build-number "${SOURCE_BUILD_NUMBER}" \
     --execution-type offline_reanalysis \
     --trigger-type scheduled
 done
