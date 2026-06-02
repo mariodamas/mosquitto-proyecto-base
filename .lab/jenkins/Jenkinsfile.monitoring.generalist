@@ -331,6 +331,7 @@ resolve_branch() {
   printf 'UNKNOWN\n'
 }
 
+
 for BUILD_DIR in "${ETL_ROOT}"/*; do
   [ -d "${BUILD_DIR}/raw/results" ] || continue
 
@@ -341,7 +342,6 @@ for BUILD_DIR in "${ETL_ROOT}"/*; do
   BRANCH_SAFE="$(resolve_branch "${BUILD_JSON}")"
   REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
   SOURCE_BUILD_NUMBER="$(json_field "${BUILD_JSON}" jenkins_build_number)"
-  SOURCE_PIPELINE_ID="$(json_field "${BUILD_JSON}" job_name)"
 
   [ -n "${COMMIT_SHA}" ] || COMMIT_SHA="UNKNOWN"
   [ -n "${REPO_URL_SAFE}" ] || REPO_URL_SAFE="${PROJECT_REPO_URL}"
@@ -356,7 +356,6 @@ for BUILD_DIR in "${ETL_ROOT}"/*; do
     --commit-sha "${COMMIT_SHA}" \
     --pipeline-id "${JOB_NAME:-devsecops-monitoring}" \
     --build-number "${RUN_ID}" \
-    --source-pipeline-id "${SOURCE_PIPELINE_ID}" \
     --source-build-number "${SOURCE_BUILD_NUMBER}" \
     --execution-type offline_reanalysis \
     --trigger-type scheduled
