@@ -406,8 +406,8 @@ find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,300p' || true
     always {
       node('') {
         archiveArtifacts artifacts: 'monitoring-results/**', allowEmptyArchive: true
-        env.JENKINS_RESULT = currentBuild.currentResult
-        sh '''#!/usr/bin/env bash
+        withEnv(["JENKINS_RESULT=${currentBuild.currentResult}"]) {
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 python3 .lab/jenkins/notify_devsecops.py \
   --job-key monitoring \
@@ -416,6 +416,7 @@ python3 .lab/jenkins/notify_devsecops.py \
   --metadata-glob 'monitoring-results/**/ingest-metadata.json' \
   --metadata-glob "${LAB}/monitoring/${TARGET_PROJECT}/**/ingest-metadata.json"
 '''
+        }
         echo 'Monitoring artifacts archived.'
       }
     }

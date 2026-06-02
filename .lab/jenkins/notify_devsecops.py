@@ -39,11 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     metadata_paths = _collect_metadata_paths(args.metadata_file, args.metadata_glob)
     metadata_items = [_load_metadata(path) for path in metadata_paths] or [{}]
 
-    exit_code = 0
     for metadata in metadata_items:
-        if not _publish(api_base, _payload(args, metadata)):
-            exit_code = 1
-    return exit_code
+        _publish(api_base, _payload(args, metadata))
+    return 0
 
 
 def _collect_metadata_paths(files: list[str], patterns: list[str]) -> list[Path]:
