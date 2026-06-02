@@ -692,15 +692,17 @@ python3 -m ingestor.cli \
     always {
       node('') {
         archiveArtifacts artifacts: 'results/**', allowEmptyArchive: true
-        withEnv(["JENKINS_RESULT=${currentBuild.currentResult}"]) {
-          sh '''#!/usr/bin/env bash
+        withCredentials([string(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN')]) {
+          withEnv(["JENKINS_RESULT=${currentBuild.currentResult}"]) {
+            sh '''#!/usr/bin/env bash
 set -euo pipefail
-python3 .lab/jenkins/notify_devsecops.py \
+python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
   --job-key general \
   --default-job-name devsecops-ci \
   --trigger-type "${TRIGGER_TYPE:-jenkins}" \
   --metadata-file results/metadata/ingest-metadata.json
 '''
+          }
         }
         echo 'DevSecOps results archived.'
       }

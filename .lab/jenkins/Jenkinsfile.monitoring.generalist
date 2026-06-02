@@ -135,7 +135,7 @@ fi
         docker {
           image "${params.AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --network host -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
@@ -406,16 +406,18 @@ find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,300p' || true
     always {
       node('') {
         archiveArtifacts artifacts: 'monitoring-results/**', allowEmptyArchive: true
-        withEnv(["JENKINS_RESULT=${currentBuild.currentResult}"]) {
-          sh '''#!/usr/bin/env bash
+        withCredentials([string(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN')]) {
+          withEnv(["JENKINS_RESULT=${currentBuild.currentResult}"]) {
+            sh '''#!/usr/bin/env bash
 set -euo pipefail
-python3 .lab/jenkins/notify_devsecops.py \
+python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
   --job-key monitoring \
   --default-job-name devsecops-monitoring \
   --trigger-type scheduled \
   --metadata-glob 'monitoring-results/**/ingest-metadata.json' \
   --metadata-glob "${LAB}/monitoring/${TARGET_PROJECT}/**/ingest-metadata.json"
 '''
+          }
         }
         echo 'Monitoring artifacts archived.'
       }
