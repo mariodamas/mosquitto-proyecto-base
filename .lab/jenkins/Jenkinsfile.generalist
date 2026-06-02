@@ -73,7 +73,7 @@ echo "Build artifact: ${BUILD_ARTIFACT}"
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -96,7 +96,7 @@ cp -a "${BUILD_ARTIFACT}" results/build/
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 TMP_SRC="$(mktemp -d)"
@@ -139,7 +139,7 @@ python3 -m json.tool results/sast/gitleaks.json >/dev/null
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -261,7 +261,6 @@ if [ "${RUN_COVERITY_MISRA:-false}" = "true" ]; then
   run_coverity misra compliance "${COVERITY_MISRA_CONFIG:-/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config}" results/compliance/coverity-misra.json results/compliance/coverity-misra-analyze.log
 fi
 '''
-        }
       }
     }
 
@@ -275,7 +274,7 @@ fi
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -401,7 +400,7 @@ fi
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -426,7 +425,7 @@ fi
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -445,7 +444,7 @@ fi
       when { expression { params.RUN_EMBA } }
       agent any
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -508,7 +507,7 @@ exit 0
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -526,7 +525,7 @@ python3 -m json.tool results/hardening/checksec.json >/dev/null
     stage('Persist Artifacts') {
       agent any
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -568,7 +567,7 @@ echo "Persisted artifact snapshot: ${DEST}"
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
           withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
-            sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
@@ -680,7 +679,8 @@ python3 -m ingestor.cli \
   --pipeline-id "${JOB_NAME:-devsecops-ci}" \
   --build-number "${BUILD_ID}" \
   --execution-type "${EXECUTION_TYPE:-ci_pipeline}" \
-  --trigger-type jenkins
+  --trigger-type jenkins \
+  --metadata-output "${RESULTS_DIR}/metadata/ingest-metadata.json"
 '''
           }
         }
@@ -692,6 +692,15 @@ python3 -m ingestor.cli \
     always {
       node('') {
         archiveArtifacts artifacts: 'results/**', allowEmptyArchive: true
+        env.JENKINS_RESULT = currentBuild.currentResult
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+python3 .lab/jenkins/notify_devsecops.py \
+  --job-key general \
+  --default-job-name devsecops-ci \
+  --trigger-type "${TRIGGER_TYPE:-jenkins}" \
+  --metadata-file results/metadata/ingest-metadata.json
+'''
         echo 'DevSecOps results archived.'
       }
     }

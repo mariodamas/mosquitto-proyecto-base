@@ -36,7 +36,7 @@ pipeline {
       agent any
       steps {
         checkout scm
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf monitoring-results
 test -f .lab/ci/generate-etl-metadata.py
@@ -47,7 +47,7 @@ test -f .lab/ci/generate-etl-metadata.py
     stage('Precheck') {
       agent any
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 test -d "${LAB}"
@@ -71,7 +71,7 @@ fi
       when { expression { params.IMPORT_LATEST_BUNDLE } }
       agent any
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 LATEST="$(ls -1t "${LAB}/incoming-vuln-bundles"/vuln-intel-bundle-*.tar.gz 2>/dev/null | head -1 || true)"
@@ -119,7 +119,7 @@ fi
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 if [ "${REEVALUATE_SCOPE:-all}" = "all" ]; then
   "${LAB}/bin/reevaluate-sboms.sh" "${TARGET_PROJECT}"
@@ -139,7 +139,7 @@ fi
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 RUN_ID="${BUILD_NUMBER:-manual}"
@@ -267,7 +267,7 @@ find "${RUN_ROOT}" -maxdepth 5 -type f | sort | sed -n '1,240p' || true
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
           withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
-            sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 RUN_ID="${BUILD_NUMBER:-manual}"
@@ -358,7 +358,8 @@ for BUILD_DIR in "${ETL_ROOT}"/*; do
     --build-number "${RUN_ID}" \
     --source-build-number "${SOURCE_BUILD_NUMBER}" \
     --execution-type offline_reanalysis \
-    --trigger-type scheduled
+    --trigger-type scheduled \
+    --metadata-output "${BUILD_DIR}/metadata/ingest-metadata.json"
 done
 '''
           }
@@ -376,7 +377,7 @@ done
         }
       }
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 if [ -f "${LAB}/bin/cleanup-monitoring-retention.sh" ]; then
   bash "${LAB}/bin/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
@@ -390,7 +391,7 @@ fi
     stage('Collect Artifacts') {
       agent any
       steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf monitoring-results
 mkdir -p monitoring-results
@@ -405,6 +406,16 @@ find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,300p' || true
     always {
       node('') {
         archiveArtifacts artifacts: 'monitoring-results/**', allowEmptyArchive: true
+        env.JENKINS_RESULT = currentBuild.currentResult
+        sh '''#!/usr/bin/env bash
+set -euo pipefail
+python3 .lab/jenkins/notify_devsecops.py \
+  --job-key monitoring \
+  --default-job-name devsecops-monitoring \
+  --trigger-type scheduled \
+  --metadata-glob 'monitoring-results/**/ingest-metadata.json' \
+  --metadata-glob "${LAB}/monitoring/${TARGET_PROJECT}/**/ingest-metadata.json"
+'''
         echo 'Monitoring artifacts archived.'
       }
     }

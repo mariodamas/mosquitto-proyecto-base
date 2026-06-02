@@ -102,7 +102,7 @@ mkdir -p results/build
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 cmake -S . -B build \
@@ -134,7 +134,7 @@ cp build/src/mosquitto results/build/
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 TMP_SRC="$(mktemp -d)"
@@ -189,7 +189,7 @@ PY
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 export HOME="${WORKSPACE}/.codeql-home"
@@ -245,7 +245,7 @@ PY
 
             steps {
                 withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
-                    sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/sast
@@ -412,7 +412,6 @@ ls -lh results/sast/coverity*.log || true
 ls -lh results/compliance/coverity*.json || true
 ls -lh results/compliance/coverity*.log || true
 '''
-                }
             }
         }
 
@@ -426,7 +425,7 @@ ls -lh results/compliance/coverity*.log || true
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p "${WORKSPACE}/.cache"
@@ -477,7 +476,7 @@ PY
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/sca
@@ -589,7 +588,7 @@ ls -lh results/sca/grype-db-status.json || true
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/sca
@@ -649,7 +648,7 @@ fi
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 echo "=== Fuzzing configuration ==="
@@ -780,7 +779,7 @@ PY
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/firmware
@@ -931,7 +930,7 @@ ls -lh results/firmware/rootfs-file-list.txt
             agent any
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/emba
@@ -1005,7 +1004,7 @@ exit 0
             }
 
             steps {
-                sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p results/hardening
@@ -1037,7 +1036,7 @@ PY
     agent any
 
     steps {
-        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 PROJECT="${PROJECT_NAME:-mosquitto}"
@@ -1445,7 +1444,7 @@ echo "=== ETL artifact persistence completed ==="
             steps {
                 catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
                     withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
-                        sh '''#!/usr/bin/env bash
+          sh '''#!/usr/bin/env bash
 set -euo pipefail
 
 PROJECT="${PROJECT_NAME:-mosquitto}"
