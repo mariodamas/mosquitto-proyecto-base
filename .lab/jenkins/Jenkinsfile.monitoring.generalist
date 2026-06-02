@@ -139,124 +139,9 @@ fi
         }
       }
       steps {
-          sh '''#!/usr/bin/env bash
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
-
-RUN_ID="${BUILD_NUMBER:-manual}"
-RUN_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/runs/${RUN_ID}"
-ETL_ROOT="${RUN_ROOT}/etl"
-RUN_METADATA="${RUN_ROOT}/metadata"
-rm -rf "${RUN_ROOT}"
-mkdir -p "${ETL_ROOT}" "${RUN_METADATA}"
-
-if [ -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ]; then
-  cp "${LAB}/vuln-dbs/current-bundle-manifest.json" "${RUN_METADATA}/current-bundle-manifest.json"
-fi
-
-grype db status -o json > "${RUN_METADATA}/grype-db-status.json" || true
-
-if [ "${REEVALUATE_SCOPE:-all}" = "latest" ]; then
-  SNAPSHOTS="$(ls -1dt "${LAB}/artifacts/${TARGET_PROJECT}"/* 2>/dev/null | head -1 || true)"
-else
-  SNAPSHOTS="$(find "${LAB}/artifacts/${TARGET_PROJECT}" -mindepth 1 -maxdepth 1 -type d | sort -V)"
-fi
-
-if [ -z "${SNAPSHOTS}" ]; then
-  echo "No stored builds found under ${LAB}/artifacts/${TARGET_PROJECT}"
-  exit 0
-fi
-
-for SNAPSHOT in ${SNAPSHOTS}; do
-  [ -d "${SNAPSHOT}/raw/results" ] || continue
-
-  ORIGINAL_BUILD="$(basename "${SNAPSHOT}")"
-  RUN_SNAPSHOT="${ETL_ROOT}/${ORIGINAL_BUILD}"
-  SRC="${SNAPSHOT}/raw/results"
-  OUT="${RUN_SNAPSHOT}/raw/results"
-  META="${RUN_SNAPSHOT}/metadata"
-  COPIED=0
-
-  mkdir -p "${OUT}/metadata" "${OUT}/sca" "${OUT}/emba/SBOM" "${META}"
-  [ ! -d "${SNAPSHOT}/metadata" ] || cp -a "${SNAPSHOT}/metadata/." "${META}/"
-
-  if [ -s "${SRC}/sca/sbom-source.cyclonedx.json" ]; then
-    cp "${SRC}/sca/sbom-source.cyclonedx.json" "${OUT}/sca/sbom-source.cyclonedx.json"
-    COPIED=1
-  fi
-  if [ -s "${SRC}/sca/manual-manifest.cdx.json" ]; then
-    cp "${SRC}/sca/manual-manifest.cdx.json" "${OUT}/sca/manual-manifest.cdx.json"
-    COPIED=1
-  fi
-  if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
-    export NO_PROXY="${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,::1"
-    export no_proxy="${no_proxy:+${no_proxy},}localhost,127.0.0.1,::1"
-    UI_MANUAL_MANIFEST="${OUT}/sca/manual-manifest.ui.cdx.json"
-    if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
-      --api-base-url "${DEVSECOPS_API_BASE_URL}" \
-      --project-name "${PROJECT_DB_NAME:-${TARGET_PROJECT}}" \
-      --output "${UI_MANUAL_MANIFEST}"; then
-      UI_MANUAL_COUNT="$(python3 - "${UI_MANUAL_MANIFEST}" <<'PY'
-import json
-import sys
-from pathlib import Path
-path = Path(sys.argv[1])
-print(len(json.loads(path.read_text(encoding="utf-8")).get("components", [])))
-PY
-      )"
-      if [ "${UI_MANUAL_COUNT}" -gt 0 ]; then
-        mv "${UI_MANUAL_MANIFEST}" "${OUT}/sca/manual-manifest.cdx.json"
-        COPIED=1
-        echo "Using latest UI manual component catalog with ${UI_MANUAL_COUNT} components for ${ORIGINAL_BUILD}."
-      else
-        rm -f "${UI_MANUAL_MANIFEST}" "${OUT}/sca/manual-manifest.cdx.json"
-        echo "Latest UI manual component catalog is empty for ${ORIGINAL_BUILD}; skipping manual manifest analysis."
-      fi
-    else
-      rm -f "${UI_MANUAL_MANIFEST}" "${OUT}/sca/manual-manifest.cdx.json"
-      echo "WARNING: UI manual component export failed for ${ORIGINAL_BUILD}; skipping manual manifest analysis."
-    fi
-  fi
-  if [ -s "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" ]; then
-    cp "${SRC}/emba/SBOM/EMBA_cyclonedx_sbom.json" "${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json"
-    COPIED=1
-  fi
-
-  if [ -s "${RUN_METADATA}/current-bundle-manifest.json" ]; then
-    cp "${RUN_METADATA}/current-bundle-manifest.json" "${RUN_SNAPSHOT}/metadata/current-bundle-manifest.json"
-    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/current-bundle-manifest.json"
-    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/metadata/current-bundle-manifest.json"
-    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/metadata/vulnerability-bundle.json"
-    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/sca/current-bundle-manifest.json"
-    cp "${RUN_METADATA}/current-bundle-manifest.json" "${OUT}/sca/vulnerability-bundle.json"
-  fi
-
-  if [ "${COPIED}" -eq 0 ]; then
-    echo "Skipping ${ORIGINAL_BUILD}: no SBOM inventories found."
-    rm -rf "${RUN_SNAPSHOT}"
-    continue
-  fi
-
-  grype db status -o json > "${OUT}/sca/grype-db-status.json" || true
-  [ ! -s "${OUT}/sca/sbom-source.cyclonedx.json" ] || grype "sbom:${OUT}/sca/sbom-source.cyclonedx.json" -o json --file "${OUT}/sca/grype-source.json"
-  [ ! -s "${OUT}/sca/manual-manifest.cdx.json" ] || grype "sbom:${OUT}/sca/manual-manifest.cdx.json" -o json --file "${OUT}/sca/grype-manual-manifest.json" \
-    || echo "WARNING: manual manifest analysis failed for ${ORIGINAL_BUILD}; continuing without blocking the pipeline."
-  [ ! -s "${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json" ] || grype "sbom:${OUT}/emba/SBOM/EMBA_cyclonedx_sbom.json" -o json --file "${OUT}/sca/grype-emba.json"
-
-  SOURCE_SBOM_REQUIRED=false \
-  MANUAL_MANIFEST_REQUIRED=false \
-  PROJECT_NAME="${TARGET_PROJECT}" \
-  PROJECT_DB_NAME="${PROJECT_DB_NAME}" \
-  PROJECT_REPO_URL="${PROJECT_REPO_URL}" \
-  PROJECT_BRANCH="${PROJECT_BRANCH:-}" \
-  EXECUTION_TYPE=offline_reanalysis \
-  python3 .lab/ci/generate-etl-metadata.py \
-    --snapshot "${RUN_SNAPSHOT}" \
-    --project "${TARGET_PROJECT}" \
-    --build "${ORIGINAL_BUILD}" \
-    --execution-type offline_reanalysis
-done
-
-find "${RUN_ROOT}" -maxdepth 5 -type f | sort | sed -n '1,240p' || true
+bash "${PLATFORM_DIR}/scripts/prepare-devsecops-monitoring-reanalysis.sh"
 '''
       }
     }
@@ -267,100 +152,9 @@ find "${RUN_ROOT}" -maxdepth 5 -type f | sort | sed -n '1,240p' || true
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
           withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
-          sh '''#!/usr/bin/env bash
+            sh '''#!/usr/bin/env bash
 set -euo pipefail
-
-RUN_ID="${BUILD_NUMBER:-manual}"
-RUN_ROOT="${LAB}/monitoring/${TARGET_PROJECT}/runs/${RUN_ID}"
-ETL_ROOT="${RUN_ROOT}/etl"
-RUN_METADATA="${RUN_ROOT}/metadata"
-test -d "${RUN_ROOT}"
-test -d "${ETL_ROOT}"
-test -d "${INGESTOR_SRC}"
-test -f "${INGESTOR_SRC}/ingestor/cli.py"
-
-export PYTHONPATH="${INGESTOR_SRC}"
-
-json_field() {
-  python3 - "$1" "$2" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-field = sys.argv[2]
-if not path.is_file():
-    print("")
-else:
-    try:
-        print(json.loads(path.read_text(encoding="utf-8")).get(field, ""))
-    except Exception:
-        print("")
-PY
-}
-
-normalize_branch() {
-  local branch="${1:-}"
-  branch="${branch#refs/heads/}"
-  branch="${branch#refs/remotes/}"
-  branch="${branch#remotes/}"
-  branch="${branch#origin/}"
-  if [ -z "${branch}" ] || [ "${branch}" = "HEAD" ]; then
-    return 1
-  fi
-  printf '%s\n' "${branch}"
-}
-
-resolve_branch() {
-  local build_json="$1"
-  local branch=""
-  local candidate=""
-
-  for candidate in \
-    "$(json_field "${build_json}" git_branch)" \
-    "${PROJECT_BRANCH:-}" \
-    "${CHANGE_BRANCH:-}" \
-    "${BRANCH_NAME:-}" \
-    "${GIT_BRANCH:-}" \
-    "$(git symbolic-ref --short HEAD 2>/dev/null || true)" \
-    "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"; do
-    branch="$(normalize_branch "${candidate}" 2>/dev/null || true)"
-    [ -z "${branch}" ] || { printf '%s\n' "${branch}"; return 0; }
-  done
-
-  printf 'UNKNOWN\n'
-}
-
-
-for BUILD_DIR in "${ETL_ROOT}"/*; do
-  [ -d "${BUILD_DIR}/raw/results" ] || continue
-
-  ORIGINAL_BUILD="$(basename "${BUILD_DIR}")"
-  BUILD_JSON="${BUILD_DIR}/metadata/build.json"
-
-  COMMIT_SHA="$(json_field "${BUILD_JSON}" git_commit)"
-  BRANCH_SAFE="$(resolve_branch "${BUILD_JSON}")"
-  REPO_URL_SAFE="$(json_field "${BUILD_JSON}" repo_url)"
-  SOURCE_BUILD_NUMBER="$(json_field "${BUILD_JSON}" jenkins_build_number)"
-
-  [ -n "${COMMIT_SHA}" ] || COMMIT_SHA="UNKNOWN"
-  [ -n "${REPO_URL_SAFE}" ] || REPO_URL_SAFE="${PROJECT_REPO_URL}"
-  [ -n "${SOURCE_BUILD_NUMBER}" ] || SOURCE_BUILD_NUMBER="${ORIGINAL_BUILD}"
-
-  python3 -m ingestor.cli \
-    --results-dir "${BUILD_DIR}/raw/results" \
-    --dsn "${DEVSECOPS_DB_DSN}" \
-    --project-name "${PROJECT_DB_NAME}" \
-    --repo-url "${REPO_URL_SAFE}" \
-    --branch "${BRANCH_SAFE}" \
-    --commit-sha "${COMMIT_SHA}" \
-    --pipeline-id "${JOB_NAME:-devsecops-monitoring}" \
-    --build-number "${RUN_ID}" \
-    --source-build-number "${SOURCE_BUILD_NUMBER}" \
-    --execution-type offline_reanalysis \
-    --trigger-type scheduled \
-    --metadata-output "${BUILD_DIR}/metadata/ingest-metadata.json"
-done
+bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh" --mode monitoring
 '''
           }
         }
@@ -391,12 +185,9 @@ fi
     stage('Collect Artifacts') {
       agent any
       steps {
-          sh '''#!/usr/bin/env bash
+        sh '''#!/usr/bin/env bash
 set -euo pipefail
-rm -rf monitoring-results
-mkdir -p monitoring-results
-[ ! -d "${LAB}/monitoring/${TARGET_PROJECT}" ] || cp -a "${LAB}/monitoring/${TARGET_PROJECT}/." monitoring-results/
-find monitoring-results -maxdepth 7 -type f | sort | sed -n '1,300p' || true
+bash "${PLATFORM_DIR}/scripts/collect-devsecops-monitoring-artifacts.sh"
 '''
       }
     }
