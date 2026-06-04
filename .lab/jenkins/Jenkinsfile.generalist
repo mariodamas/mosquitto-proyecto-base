@@ -558,7 +558,10 @@ bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh"
       node('') {
         archiveArtifacts artifacts: 'results/**', allowEmptyArchive: true
         withCredentials([string(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN')]) {
-          withEnv(["JENKINS_RESULT=${currentBuild.currentResult}"]) {
+          withEnv([
+            "JENKINS_RESULT=${currentBuild.currentResult}",
+            "JENKINS_DURATION_SECONDS=${(currentBuild.duration / 1000) as long}",
+          ]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
 python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
