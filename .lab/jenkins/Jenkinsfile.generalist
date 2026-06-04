@@ -9,10 +9,6 @@ pipeline {
   }
 
   parameters {
-    string(name: 'PROJECT_CONFIG', defaultValue: '.devsecops/project.env', description: 'Project DevSecOps contract file')
-    string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
-    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: 'http://localhost:8000/api/v1', description: 'DevSecOps API base URL used to export the UI manual component catalog')
-
     booleanParam(name: 'RUN_SECRETS', defaultValue: true, description: 'Run Gitleaks')
     booleanParam(name: 'RUN_CODEQL', defaultValue: true, description: 'Run CodeQL SAST')
     booleanParam(name: 'RUN_COVERITY_STANDARD', defaultValue: true, description: 'Run Coverity standard SAST')
@@ -36,6 +32,13 @@ pipeline {
     PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
     INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
     EXECUTION_TYPE = 'ci_pipeline'
+    // Constantes de plataforma (no son decisiones por ejecución, no se exponen en la UI):
+    AGENT_IMAGE = 'devsecops-agente:1.0'
+    PROJECT_CONFIG = '.devsecops/project.env'
+    // Endpoint de la plataforma: se define una vez como variable global de Jenkins
+    // (Manage Jenkins > System > Global properties) y se reutiliza en todos los
+    // proyectos. El fallback cubre ejecución local sin esa propiedad configurada.
+    DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://localhost:8000/api/v1'}"
   }
 
   stages {
@@ -67,7 +70,7 @@ echo "Build artifact: ${BUILD_ARTIFACT}"
     stage('Build') {
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103'
         }
@@ -90,7 +93,7 @@ cp -a "${BUILD_ARTIFACT}" results/build/
       when { expression { params.RUN_SECRETS } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103'
         }
@@ -133,7 +136,7 @@ python3 -m json.tool results/sast/gitleaks.json >/dev/null
       when { expression { params.RUN_CODEQL } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103 -v /opt/devsecops-lab/codeql:/opt/codeql:ro'
         }
@@ -177,7 +180,7 @@ python3 -m json.tool results/sast/codeql.sarif >/dev/null
       when { expression { params.RUN_COVERITY_STANDARD || params.RUN_COVERITY_CERT || params.RUN_COVERITY_MISRA } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103'
         }
@@ -270,7 +273,7 @@ fi
       when { expression { params.RUN_SCA } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103 --network host -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
@@ -396,7 +399,7 @@ fi
       when { expression { params.RUN_FUZZING } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103 -v /opt/devsecops-lab/fuzzing-corpus:/opt/devsecops-lab/fuzzing-corpus:rw'
         }
@@ -421,7 +424,7 @@ fi
       when { expression { params.RUN_FIRMWARE } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103'
         }
@@ -503,7 +506,7 @@ exit 0
       when { expression { params.RUN_HARDENING } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103'
         }

@@ -16,8 +16,6 @@ pipeline {
     string(name: 'PROJECT', defaultValue: 'mosquitto', description: 'Project artifact namespace to re-evaluate')
     string(name: 'PROJECT_DB_NAME', defaultValue: 'mosquitto-proyecto-base', description: 'Project name used by the ETL database')
     string(name: 'PROJECT_REPO_URL', defaultValue: 'https://github.com/mariodamas/mosquitto-proyecto-base', description: 'Project repository URL')
-    string(name: 'AGENT_IMAGE', defaultValue: 'devsecops-agente:1.0', description: 'Docker image with DevSecOps tools')
-    string(name: 'DEVSECOPS_API_BASE_URL', defaultValue: 'http://localhost:8000/api/v1', description: 'DevSecOps API base URL used to export the latest UI manual component catalog')
     choice(name: 'REEVALUATE_SCOPE', choices: ['latest', 'all'], description: 'Re-evaluate every retained build or only the newest stored build')
     booleanParam(name: 'IMPORT_LATEST_BUNDLE', defaultValue: true, description: 'Import newest vulnerability bundle before reanalysis')
     booleanParam(name: 'RUN_ETL', defaultValue: true, description: 'Ingest offline reanalysis into PostgreSQL')
@@ -29,6 +27,11 @@ pipeline {
     TARGET_PROJECT = "${params.PROJECT}"
     PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
     INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
+    // Constantes de plataforma (no se exponen en la UI):
+    AGENT_IMAGE = 'devsecops-agente:1.0'
+    // Endpoint de la plataforma: variable global de Jenkins reutilizada por todos
+    // los proyectos; el fallback cubre ejecución local sin esa propiedad.
+    DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://localhost:8000/api/v1'}"
   }
 
   stages {
@@ -113,7 +116,7 @@ fi
     stage('Reevaluate Inventories') {
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103 --network host -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
@@ -133,7 +136,7 @@ fi
     stage('Prepare ETL Reanalysis') {
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 101:103 --network host -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
@@ -165,7 +168,7 @@ bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh" --mode monitoring
       when { expression { params.RUN_RETENTION } }
       agent {
         docker {
-          image "${params.AGENT_IMAGE}"
+          image "${AGENT_IMAGE}"
           reuseNode true
           args '-u 0:0 -v /opt/devsecops-lab:/opt/devsecops-lab:rw'
         }
