@@ -23,7 +23,7 @@ Propiedades globales recomendadas:
 
 ```text
 DEVSECOPS_API_BASE_URL=http://127.0.0.1:3000/api/v1
-DEVSECOPS_API_CONTAINER_BASE_URL=http://host.docker.internal:3000/api/v1
+DEVSECOPS_API_CONTAINER_BASE_URL=http://backend:8000/api/v1
 INGESTOR_IMAGE=cipherbit-ingestor:local
 DEVSECOPS_DOCKER_NETWORK=cipherbit_ingestion
 ```

@@ -37,7 +37,7 @@ pipeline {
     // Endpoint de la plataforma: variable global de Jenkins reutilizada por todos
     // los proyectos; el fallback cubre ejecución local sin esa propiedad.
     DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://127.0.0.1:3000/api/v1'}"
-    DEVSECOPS_API_CONTAINER_BASE_URL = "${env.DEVSECOPS_API_CONTAINER_BASE_URL ?: 'http://host.docker.internal:3000/api/v1'}"
+    DEVSECOPS_API_CONTAINER_BASE_URL = "${env.DEVSECOPS_API_CONTAINER_BASE_URL ?: 'http://backend:8000/api/v1'}"
   }
 
   stages {
@@ -151,7 +151,7 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --add-host host.docker.internal:host-gateway -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --network cipherbit_jenkins_api -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {

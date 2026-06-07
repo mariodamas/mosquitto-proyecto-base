@@ -44,7 +44,7 @@ pipeline {
     // (Manage Jenkins > System > Global properties) y se reutiliza en todos los
     // proyectos. El fallback cubre ejecución local sin esa propiedad configurada.
     DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://127.0.0.1:3000/api/v1'}"
-    DEVSECOPS_API_CONTAINER_BASE_URL = "${env.DEVSECOPS_API_CONTAINER_BASE_URL ?: 'http://host.docker.internal:3000/api/v1'}"
+    DEVSECOPS_API_CONTAINER_BASE_URL = "${env.DEVSECOPS_API_CONTAINER_BASE_URL ?: 'http://backend:8000/api/v1'}"
   }
 
   stages {
@@ -278,7 +278,7 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --add-host host.docker.internal:host-gateway -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --network cipherbit_jenkins_api -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
@@ -318,8 +318,8 @@ syft . \
 python3 -m json.tool results/sca/sbom-source.cyclonedx.json >/dev/null
 
 if [ -n "${DEVSECOPS_API_CONTAINER_BASE_URL:-}" ]; then
-  export NO_PROXY="${NO_PROXY:+${NO_PROXY},}host.docker.internal"
-  export no_proxy="${no_proxy:+${no_proxy},}host.docker.internal"
+  export NO_PROXY="${NO_PROXY:+${NO_PROXY},}backend"
+  export no_proxy="${no_proxy:+${no_proxy},}backend"
   UI_MANUAL_MANIFEST="results/sca/manual-manifest.ui.cdx.json"
   if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
     --api-base-url "${DEVSECOPS_API_CONTAINER_BASE_URL}" \
