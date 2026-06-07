@@ -30,15 +30,21 @@ pipeline {
     LAB = '/opt/devsecops-lab'
     RESULTS = 'results'
     PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
-    INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
     EXECUTION_TYPE = 'ci_pipeline'
     // Constantes de plataforma (no son decisiones por ejecución, no se exponen en la UI):
     AGENT_IMAGE = 'devsecops-agente:1.0'
+    INGESTOR_IMAGE = "${env.INGESTOR_IMAGE ?: 'cipherbit-ingestor:local'}"
+    DEVSECOPS_DOCKER_NETWORK = "${env.DEVSECOPS_DOCKER_NETWORK ?: 'cipherbit_ingestion'}"
+    DEVSECOPS_DB_HOST = 'postgres'
+    DEVSECOPS_DB_PORT = '5432'
+    DEVSECOPS_DB_NAME = 'cipherbit'
+    DEVSECOPS_DB_USER = 'cipherbit_ingestor'
     PROJECT_CONFIG = '.devsecops/project.env'
     // Endpoint de la plataforma: se define una vez como variable global de Jenkins
     // (Manage Jenkins > System > Global properties) y se reutiliza en todos los
     // proyectos. El fallback cubre ejecución local sin esa propiedad configurada.
-    DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://localhost:8000/api/v1'}"
+    DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://127.0.0.1:3000/api/v1'}"
+    DEVSECOPS_API_CONTAINER_BASE_URL = "${env.DEVSECOPS_API_CONTAINER_BASE_URL ?: 'http://host.docker.internal:3000/api/v1'}"
   }
 
   stages {
@@ -72,7 +78,7 @@ echo "Build artifact: ${BUILD_ARTIFACT}"
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024'
         }
       }
       steps {
@@ -95,7 +101,7 @@ cp -a "${BUILD_ARTIFACT}" results/build/
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024'
         }
       }
       steps {
@@ -138,7 +144,7 @@ python3 -m json.tool results/sast/gitleaks.json >/dev/null
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 -v /opt/devsecops-lab/codeql:/opt/codeql:ro'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 -v /opt/devsecops-lab/codeql:/opt/codeql:ro'
         }
       }
       steps {
@@ -182,7 +188,7 @@ python3 -m json.tool results/sast/codeql.sarif >/dev/null
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024'
         }
       }
       steps {
@@ -194,9 +200,6 @@ source "${PROJECT_CONFIG:-.devsecops/project.env}"
 set +a
 
 test -r "${COV_LICENSE}"
-cp "${COV_LICENSE}" coverity-license.dat
-chmod 600 coverity-license.dat
-trap 'rm -f coverity-license.dat' EXIT
 
 rm -rf build-coverity coverity-config
 mkdir -p coverity-config results/sast results/compliance
@@ -231,20 +234,20 @@ run_coverity() {
 
   if [ "${mode}" = "standard" ]; then
     /opt/coverity/bin/cov-analyze \
-      --security-file coverity-license.dat \
+      --security-file "${COV_LICENSE}" \
       --dir "${cov_dir}" \
       --all 2>&1 | tee "${output_log}"
   else
     test -f "${config}"
     /opt/coverity/bin/cov-analyze \
-      --security-file coverity-license.dat \
+      --security-file "${COV_LICENSE}" \
       --dir "${cov_dir}" \
       --disable-default \
       --coding-standard-config "${config}" 2>&1 | tee "${output_log}"
   fi
 
   /opt/coverity/bin/cov-format-errors \
-    --security-file coverity-license.dat \
+    --security-file "${COV_LICENSE}" \
     --dir "${cov_dir}" \
     --json-output-v8 "${output_json}"
 
@@ -275,7 +278,7 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --network host -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --add-host host.docker.internal:host-gateway -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/vuln-dbs/grype:/home/jenkins/.cache/grype:ro -v /opt/devsecops-lab/vuln-dbs:/mnt/vuln-dbs:ro -v /opt/devsecops-lab/vuln-dbs/owaspdc-data:/mnt/owaspdc-data:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/home/jenkins/.cache/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
@@ -314,12 +317,12 @@ syft . \
 
 python3 -m json.tool results/sca/sbom-source.cyclonedx.json >/dev/null
 
-if [ -n "${DEVSECOPS_API_BASE_URL:-}" ]; then
-  export NO_PROXY="${NO_PROXY:+${NO_PROXY},}localhost,127.0.0.1,::1"
-  export no_proxy="${no_proxy:+${no_proxy},}localhost,127.0.0.1,::1"
+if [ -n "${DEVSECOPS_API_CONTAINER_BASE_URL:-}" ]; then
+  export NO_PROXY="${NO_PROXY:+${NO_PROXY},}host.docker.internal"
+  export no_proxy="${no_proxy:+${no_proxy},}host.docker.internal"
   UI_MANUAL_MANIFEST="results/sca/manual-manifest.ui.cdx.json"
   if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
-    --api-base-url "${DEVSECOPS_API_BASE_URL}" \
+    --api-base-url "${DEVSECOPS_API_CONTAINER_BASE_URL}" \
     --project-name "${PROJECT_DB_NAME:-${PROJECT_NAME}}" \
     --output "${UI_MANUAL_MANIFEST}"; then
     UI_MANUAL_COUNT="$(python3 - "${UI_MANUAL_MANIFEST}" <<'PY'
@@ -401,7 +404,7 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 -v /opt/devsecops-lab/fuzzing-corpus:/opt/devsecops-lab/fuzzing-corpus:rw'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 -v /opt/devsecops-lab/fuzzing-corpus:/opt/devsecops-lab/fuzzing-corpus:rw'
         }
       }
       steps {
@@ -426,7 +429,7 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024'
         }
       }
       steps {
@@ -447,7 +450,7 @@ fi
 
     stage('EMBA') {
       when { expression { params.RUN_EMBA } }
-      agent any
+      agent { label 'emba-isolated' }
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
@@ -508,7 +511,7 @@ exit 0
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024'
         }
       }
       steps {
@@ -542,10 +545,10 @@ bash "${PLATFORM_DIR}/scripts/persist-devsecops-artifacts.sh"
       agent any
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-          withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
+          withCredentials([file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE')]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh"
+bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest-container.sh"
 '''
           }
         }
@@ -557,7 +560,7 @@ bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh"
     always {
       node('') {
         archiveArtifacts artifacts: 'results/**', allowEmptyArchive: true
-        withCredentials([string(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN')]) {
+        withCredentials([file(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN_FILE')]) {
           withEnv([
             "JENKINS_RESULT=${currentBuild.currentResult}",
             "JENKINS_DURATION_SECONDS=${(currentBuild.duration / 1000) as long}",
@@ -568,7 +571,8 @@ python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
   --job-key general \
   --default-job-name devsecops-ci \
   --trigger-type "${TRIGGER_TYPE:-jenkins}" \
-  --metadata-file results/metadata/ingest-metadata.json
+  --metadata-file results/metadata/ingest-metadata.json \
+  --token-file "${JENKINS_WEBHOOK_TOKEN_FILE}"
 '''
           }
         }

@@ -26,12 +26,18 @@ pipeline {
     LAB = '/opt/devsecops-lab'
     TARGET_PROJECT = "${params.PROJECT}"
     PLATFORM_DIR = '/opt/devsecops-lab/platform/devsecops_platform'
-    INGESTOR_SRC = '/opt/devsecops-lab/platform/devsecops_platform/ingestor/src'
     // Constantes de plataforma (no se exponen en la UI):
     AGENT_IMAGE = 'devsecops-agente:1.0'
+    INGESTOR_IMAGE = "${env.INGESTOR_IMAGE ?: 'cipherbit-ingestor:local'}"
+    DEVSECOPS_DOCKER_NETWORK = "${env.DEVSECOPS_DOCKER_NETWORK ?: 'cipherbit_ingestion'}"
+    DEVSECOPS_DB_HOST = 'postgres'
+    DEVSECOPS_DB_PORT = '5432'
+    DEVSECOPS_DB_NAME = 'cipherbit'
+    DEVSECOPS_DB_USER = 'cipherbit_ingestor'
     // Endpoint de la plataforma: variable global de Jenkins reutilizada por todos
     // los proyectos; el fallback cubre ejecución local sin esa propiedad.
-    DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://localhost:8000/api/v1'}"
+    DEVSECOPS_API_BASE_URL = "${env.DEVSECOPS_API_BASE_URL ?: 'http://127.0.0.1:3000/api/v1'}"
+    DEVSECOPS_API_CONTAINER_BASE_URL = "${env.DEVSECOPS_API_CONTAINER_BASE_URL ?: 'http://host.docker.internal:3000/api/v1'}"
   }
 
   stages {
@@ -52,6 +58,13 @@ test -f .lab/ci/generate-etl-metadata.py
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
+
+case "${TARGET_PROJECT}" in
+  .*|*..*|*[!A-Za-z0-9._-]*)
+    echo "PROJECT must be a simple identifier, not a path" >&2
+    exit 2
+    ;;
+esac
 
 test -d "${LAB}"
 test -d "${LAB}/artifacts/${TARGET_PROJECT}"
@@ -118,7 +131,7 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --network host -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 -v /opt/devsecops-lab/bin:/opt/devsecops-lab/bin:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
@@ -138,13 +151,14 @@ fi
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --network host -v /opt/devsecops-lab:/opt/devsecops-lab:rw -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --add-host host.docker.internal:host-gateway -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/prepare-devsecops-monitoring-reanalysis.sh"
+DEVSECOPS_API_BASE_URL="${DEVSECOPS_API_CONTAINER_BASE_URL}" \
+  bash "${PLATFORM_DIR}/scripts/prepare-devsecops-monitoring-reanalysis.sh"
 '''
       }
     }
@@ -154,10 +168,10 @@ bash "${PLATFORM_DIR}/scripts/prepare-devsecops-monitoring-reanalysis.sh"
       agent any
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-          withCredentials([string(credentialsId: 'devsecops-db-dsn', variable: 'DEVSECOPS_DB_DSN')]) {
+          withCredentials([file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE')]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh" --mode monitoring
+bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest-container.sh" --mode monitoring
 '''
           }
         }
@@ -170,7 +184,7 @@ bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest.sh" --mode monitoring
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 0:0 -v /opt/devsecops-lab:/opt/devsecops-lab:rw'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 -v /opt/devsecops-lab/bin:/opt/devsecops-lab/bin:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:rw -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw'
         }
       }
       steps {
@@ -200,7 +214,7 @@ bash "${PLATFORM_DIR}/scripts/collect-devsecops-monitoring-artifacts.sh"
     always {
       node('') {
         archiveArtifacts artifacts: 'monitoring-results/**', allowEmptyArchive: true
-        withCredentials([string(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN')]) {
+        withCredentials([file(credentialsId: 'devsecops-jenkins-webhook-token', variable: 'JENKINS_WEBHOOK_TOKEN_FILE')]) {
           withEnv([
             "JENKINS_RESULT=${currentBuild.currentResult}",
             "JENKINS_DURATION_SECONDS=${(currentBuild.duration / 1000) as long}",
@@ -212,7 +226,8 @@ python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
   --default-job-name devsecops-monitoring \
   --trigger-type scheduled \
   --metadata-glob 'monitoring-results/**/ingest-metadata.json' \
-  --metadata-glob "${LAB}/monitoring/${TARGET_PROJECT}/**/ingest-metadata.json"
+  --metadata-glob "${LAB}/monitoring/${TARGET_PROJECT}/**/ingest-metadata.json" \
+  --token-file "${JENKINS_WEBHOOK_TOKEN_FILE}"
 '''
           }
         }
