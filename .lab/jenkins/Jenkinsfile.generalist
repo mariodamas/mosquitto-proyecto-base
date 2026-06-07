@@ -450,7 +450,8 @@ fi
 
     stage('EMBA') {
       when { expression { params.RUN_EMBA } }
-      agent { label 'emba-isolated' }
+      // Transitional deployment: EMBA remains installed on the current Jenkins host.
+      agent any
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail

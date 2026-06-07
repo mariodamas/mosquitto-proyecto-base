@@ -32,6 +32,11 @@ El usuario del agente dentro de los contenedores es `101:103`. Los directorios
 `/opt/devsecops-lab/artifacts` y `/opt/devsecops-lab/monitoring` deben ser
 escribibles por ese UID/GID; los jobs no elevan a root para corregir ownership.
 
-EMBA solo se ejecuta en un agente Jenkins con etiqueta `emba-isolated`. Ese
-agente debe ser una maquina o VM dedicada, sin secretos ajenos al analisis y
-con un `sudoers` limitado al wrapper/comando EMBA requerido.
+De forma transitoria, EMBA se ejecuta en el nodo Jenkins actual mediante
+`agent any`, conservando la instalacion existente en `/opt/emba`. Para habilitar
+`RUN_EMBA=true`, el usuario `jenkins` debe poder ejecutar sin interaccion el
+comando EMBA y el `chown` usados por el pipeline. No deben ejecutarse ramas ni
+pull requests no confiables con EMBA habilitado.
+
+El objetivo de endurecimiento posterior es mover este stage a un agente
+dedicado y restaurar `agent { label 'emba-isolated' }`.
