@@ -48,7 +48,7 @@ pipeline {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 rm -rf monitoring-results
-test -f .lab/ci/generate-etl-metadata.py
+test -f "${PLATFORM_DIR}/scripts/ci/generate-etl-metadata.py"
 '''
       }
     }
@@ -69,8 +69,9 @@ esac
 test -d "${LAB}"
 test -d "${LAB}/artifacts/${TARGET_PROJECT}"
 test -d "${LAB}/vuln-dbs/grype"
-test -x "${LAB}/bin/import-vuln-bundle.sh"
-test -x "${LAB}/bin/reevaluate-sboms.sh"
+test -f "${PLATFORM_DIR}/scripts/monitoring/import-vuln-bundle.sh"
+test -f "${PLATFORM_DIR}/scripts/monitoring/prepare-devsecops-monitoring-reanalysis.sh"
+test -f "${PLATFORM_DIR}/scripts/monitoring/cleanup-monitoring-retention.sh"
 
 find "${LAB}/artifacts/${TARGET_PROJECT}" -maxdepth 3 -type d | sort | sed -n '1,120p'
 
@@ -120,33 +121,13 @@ if [ "${LATEST_NAME}" = "${CURRENT_NAME}" ]; then
   exit 0
 fi
 
-"${LAB}/bin/import-vuln-bundle.sh" "${LATEST}"
+bash "${PLATFORM_DIR}/scripts/monitoring/import-vuln-bundle.sh" "${LATEST}"
 [ ! -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ] || cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
 '''
       }
     }
 
     stage('Reevaluate Inventories') {
-      agent {
-        docker {
-          image "${AGENT_IMAGE}"
-          reuseNode true
-          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 -v /opt/devsecops-lab/bin:/opt/devsecops-lab/bin:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
-        }
-      }
-      steps {
-          sh '''#!/usr/bin/env bash
-set -euo pipefail
-if [ "${REEVALUATE_SCOPE:-all}" = "all" ]; then
-  "${LAB}/bin/reevaluate-sboms.sh" "${TARGET_PROJECT}"
-else
-  echo "REEVALUATE_SCOPE=latest: skipping project-wide reevaluate-sboms.sh; scoped Grype reanalysis runs in the next stage."
-fi
-'''
-      }
-    }
-
-    stage('Prepare ETL Reanalysis') {
       agent {
         docker {
           image "${AGENT_IMAGE}"
@@ -158,7 +139,7 @@ fi
         sh '''#!/usr/bin/env bash
 set -euo pipefail
 DEVSECOPS_API_BASE_URL="${DEVSECOPS_API_CONTAINER_BASE_URL}" \
-  bash "${PLATFORM_DIR}/scripts/prepare-devsecops-monitoring-reanalysis.sh"
+  bash "${PLATFORM_DIR}/scripts/monitoring/prepare-devsecops-monitoring-reanalysis.sh"
 '''
       }
     }
@@ -171,7 +152,7 @@ DEVSECOPS_API_BASE_URL="${DEVSECOPS_API_CONTAINER_BASE_URL}" \
           withCredentials([file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE')]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest-container.sh" --mode monitoring
+bash "${PLATFORM_DIR}/scripts/integration/run-devsecops-ingest-container.sh" --mode monitoring
 '''
           }
         }
@@ -184,17 +165,13 @@ bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest-container.sh" --mode monitori
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 -v /opt/devsecops-lab/bin:/opt/devsecops-lab/bin:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:rw -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:rw -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/incoming-vuln-bundles:/opt/devsecops-lab/incoming-vuln-bundles:rw -v /opt/devsecops-lab/imports:/opt/devsecops-lab/imports:rw'
         }
       }
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-if [ -f "${LAB}/bin/cleanup-monitoring-retention.sh" ]; then
-  bash "${LAB}/bin/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
-else
-  echo "WARNING: cleanup script not found: ${LAB}/bin/cleanup-monitoring-retention.sh"
-fi
+bash "${PLATFORM_DIR}/scripts/monitoring/cleanup-monitoring-retention.sh" "${TARGET_PROJECT}"
 '''
       }
     }
@@ -204,7 +181,7 @@ fi
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/collect-devsecops-monitoring-artifacts.sh"
+bash "${PLATFORM_DIR}/scripts/monitoring/collect-devsecops-monitoring-artifacts.sh"
 '''
       }
     }
@@ -221,7 +198,7 @@ bash "${PLATFORM_DIR}/scripts/collect-devsecops-monitoring-artifacts.sh"
           ]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
-python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
+python3 "${PLATFORM_DIR}/scripts/integration/notify-devsecops.py" \
   --job-key monitoring \
   --default-job-name devsecops-monitoring \
   --trigger-type scheduled \

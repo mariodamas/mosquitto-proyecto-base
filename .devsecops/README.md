@@ -6,18 +6,21 @@ as the project-specific contract.
 For a new C/C++ embedded project, keep the Jenkinsfile stable and adapt:
 
 - `project.env`: project metadata, main artifact, optional tool paths.
-- `build.sh`: build actions used by normal CI, CodeQL and Coverity.
-- `fuzzing.sh`: optional fuzzing workflow; remove it or leave it absent when the
-  project has no harnesses.
-- `package-firmware.sh`: optional firmware/rootfs packaging hook for EMBA.
+- `project.sh`: the single project adapter invoked by Jenkins.
 
-Required build actions:
+Supported actions:
 
 - `build`
 - `codeql-configure`
 - `codeql-build`
 - `coverity-configure`
 - `coverity-build`
+- `fuzzing`
+- `package-firmware`
+
+The platform owns orchestration, persistence, monitoring, ingestion and
+notifications. This directory only describes how this repository builds and
+produces project-specific evidence.
 
 The Jenkinsfile treats `.lab/sca/manual-manifest.cdx.json` as a project input
 because Mosquitto has curated vendored dependency evidence. Other projects can

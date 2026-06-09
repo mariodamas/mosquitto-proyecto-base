@@ -7,6 +7,20 @@ Solo existen dos pipelines soportados:
 
 Los jobs Jenkins deben usar esas rutas como `Script Path`.
 
+La plataforma compartida es propietaria de los scripts comunes:
+
+```text
+scripts/
+├── catalog/
+├── ci/
+├── integration/
+└── monitoring/
+```
+
+El repositorio del proyecto solo aporta `.devsecops/project.env` y la interfaz
+`.devsecops/project.sh`. Jenkins no depende de scripts instalados manualmente
+en `/opt/devsecops-lab/bin`.
+
 ## Integracion con la plataforma
 
 El ETL se ejecuta en un contenedor efimero de `cipherbit-ingestor`. Jenkins no
@@ -29,8 +43,14 @@ DEVSECOPS_DOCKER_NETWORK=cipherbit_ingestion
 ```
 
 El usuario del agente dentro de los contenedores es `101:103`. Los directorios
-`/opt/devsecops-lab/artifacts` y `/opt/devsecops-lab/monitoring` deben ser
-escribibles por ese UID/GID; los jobs no elevan a root para corregir ownership.
+`/opt/devsecops-lab/artifacts`, `/opt/devsecops-lab/monitoring`,
+`/opt/devsecops-lab/imports` y `/opt/devsecops-lab/incoming-vuln-bundles`
+deben tener los permisos requeridos por cada stage; los jobs no elevan a root
+para corregir ownership.
+
+El cron se define solo en `Jenkinsfile.monitoring.generalist`. No deben existir
+cron adicionales ni timers de systemd que ejecuten importacion, reanalisis o
+retencion en paralelo.
 
 De forma transitoria, EMBA se ejecuta en el nodo Jenkins actual mediante
 `agent any`, conservando la instalacion existente en `/opt/emba`. Para habilitar

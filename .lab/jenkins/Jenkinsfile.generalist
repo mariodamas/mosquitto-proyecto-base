@@ -40,6 +40,7 @@ pipeline {
     DEVSECOPS_DB_NAME = 'cipherbit'
     DEVSECOPS_DB_USER = 'cipherbit_ingestor'
     PROJECT_CONFIG = '.devsecops/project.env'
+    PROJECT_SCRIPT = '.devsecops/project.sh'
     // Endpoint de la plataforma: se define una vez como variable global de Jenkins
     // (Manage Jenkins > System > Global properties) y se reutiliza en todos los
     // proyectos. El fallback cubre ejecución local sin esa propiedad configurada.
@@ -65,7 +66,7 @@ set +a
 
 : "${PROJECT_NAME:?PROJECT_NAME is required}"
 : "${BUILD_ARTIFACT:?BUILD_ARTIFACT is required}"
-test -f "${BUILD_SCRIPT:-.devsecops/build.sh}"
+test -f "${PROJECT_SCRIPT}"
 
 echo "Project: ${PROJECT_NAME}"
 echo "Build artifact: ${BUILD_ARTIFACT}"
@@ -88,7 +89,7 @@ set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
 set +a
 
-bash "${BUILD_SCRIPT:-.devsecops/build.sh}" build
+bash "${PROJECT_SCRIPT}" build
 test -e "${BUILD_ARTIFACT}"
 cp -a "${BUILD_ARTIFACT}" results/build/
 '''
@@ -158,12 +159,12 @@ export HOME="${WORKSPACE}/.codeql-home"
 mkdir -p "${HOME}/.codeql"
 rm -rf build/codeql-db
 
-bash "${BUILD_SCRIPT:-.devsecops/build.sh}" codeql-configure
+bash "${PROJECT_SCRIPT}" codeql-configure
 
 /opt/codeql/codeql/codeql database create build/codeql-db \
   --language="${CODEQL_LANGUAGE:-cpp}" \
   --source-root=. \
-  --command="bash ${BUILD_SCRIPT:-.devsecops/build.sh} codeql-build"
+  --command="bash ${PROJECT_SCRIPT} codeql-build"
 
 if [ -n "${CODEQL_SUITE:-}" ]; then
   SUITE="${CODEQL_SUITE}"
@@ -210,13 +211,13 @@ mkdir -p coverity-config results/sast results/compliance
   --compiler "${COVERITY_COMPILER:-clang}" \
   --comptype "${COVERITY_COMPTYPE:-clangcc}"
 
-bash "${BUILD_SCRIPT:-.devsecops/build.sh}" coverity-configure
+bash "${PROJECT_SCRIPT}" coverity-configure
 
 /opt/coverity/bin/cov-build \
   --config coverity-config/coverity_config.xml \
   --dir build-coverity/cov-int-base \
   --emit-complementary-info \
-  bash "${BUILD_SCRIPT:-.devsecops/build.sh}" coverity-build
+  bash "${PROJECT_SCRIPT}" coverity-build
 
 test -d build-coverity/cov-int-base
 
@@ -321,7 +322,7 @@ if [ -n "${DEVSECOPS_API_CONTAINER_BASE_URL:-}" ]; then
   export NO_PROXY="${NO_PROXY:+${NO_PROXY},}backend"
   export no_proxy="${no_proxy:+${no_proxy},}backend"
   UI_MANUAL_MANIFEST="results/sca/manual-manifest.ui.cdx.json"
-  if python3 "${PLATFORM_DIR}/scripts/export-manual-manifest.py" \
+  if python3 "${PLATFORM_DIR}/scripts/catalog/export-manual-manifest.py" \
     --api-base-url "${DEVSECOPS_API_CONTAINER_BASE_URL}" \
     --project-name "${PROJECT_DB_NAME:-${PROJECT_NAME}}" \
     --output "${UI_MANUAL_MANIFEST}"; then
@@ -414,11 +415,7 @@ set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
 set +a
 
-if [ -f "${FUZZING_SCRIPT:-.devsecops/fuzzing.sh}" ]; then
-  bash "${FUZZING_SCRIPT:-.devsecops/fuzzing.sh}"
-else
-  echo "No project fuzzing hook found; skipping."
-fi
+bash "${PROJECT_SCRIPT}" fuzzing
 '''
       }
     }
@@ -439,11 +436,7 @@ set -a
 source "${PROJECT_CONFIG:-.devsecops/project.env}"
 set +a
 
-if [ -f "${FIRMWARE_SCRIPT:-.devsecops/package-firmware.sh}" ]; then
-  bash "${FIRMWARE_SCRIPT:-.devsecops/package-firmware.sh}"
-else
-  echo "No project firmware hook found; EMBA will use BUILD_ARTIFACT."
-fi
+bash "${PROJECT_SCRIPT}" package-firmware
 '''
       }
     }
@@ -536,7 +529,7 @@ python3 -m json.tool results/hardening/checksec.json >/dev/null
       steps {
         sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/persist-devsecops-artifacts.sh"
+bash "${PLATFORM_DIR}/scripts/ci/persist-devsecops-artifacts.sh"
 '''
       }
     }
@@ -549,7 +542,7 @@ bash "${PLATFORM_DIR}/scripts/persist-devsecops-artifacts.sh"
           withCredentials([file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE')]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
-bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest-container.sh"
+bash "${PLATFORM_DIR}/scripts/integration/run-devsecops-ingest-container.sh"
 '''
           }
         }
@@ -568,7 +561,7 @@ bash "${PLATFORM_DIR}/scripts/run-devsecops-ingest-container.sh"
           ]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
-python3 "${PLATFORM_DIR}/scripts/notify-devsecops.py" \
+python3 "${PLATFORM_DIR}/scripts/integration/notify-devsecops.py" \
   --job-key general \
   --default-job-name devsecops-ci \
   --trigger-type "${TRIGGER_TYPE:-jenkins}" \
