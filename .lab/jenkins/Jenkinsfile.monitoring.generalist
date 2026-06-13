@@ -88,6 +88,12 @@ fi
       when { expression { params.IMPORT_LATEST_BUNDLE } }
       agent any
       steps {
+        withCredentials([
+          string(
+            credentialsId: 'devsecops-vuln-bundle-signing-fingerprint',
+            variable: 'VULN_BUNDLE_SIGNING_FINGERPRINT'
+          )
+        ]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
 
@@ -124,6 +130,7 @@ fi
 bash "${PLATFORM_DIR}/scripts/monitoring/import-vuln-bundle.sh" "${LATEST}"
 [ ! -s "${LAB}/vuln-dbs/current-bundle-manifest.json" ] || cat "${LAB}/vuln-dbs/current-bundle-manifest.json"
 '''
+        }
       }
     }
 
