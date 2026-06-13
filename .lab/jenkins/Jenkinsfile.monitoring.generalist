@@ -139,7 +139,7 @@ bash "${PLATFORM_DIR}/scripts/monitoring/import-vuln-bundle.sh" "${LATEST}"
         docker {
           image "${AGENT_IMAGE}"
           reuseNode true
-          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --network cipherbit_jenkins_api -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
+          args '-u 101:103 --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 1024 --network cipherbit_jenkins_api -v /opt/devsecops-lab/platform:/opt/devsecops-lab/platform:ro -v /opt/devsecops-lab/artifacts:/opt/devsecops-lab/artifacts:ro -v /opt/devsecops-lab/monitoring:/opt/devsecops-lab/monitoring:rw -v /opt/devsecops-lab/imports:/opt/devsecops-lab/imports:rw -v /opt/devsecops-lab/vuln-dbs:/opt/devsecops-lab/vuln-dbs:ro -e GRYPE_DB_AUTO_UPDATE=false -e GRYPE_DB_CACHE_DIR=/opt/devsecops-lab/vuln-dbs/grype -e GRYPE_DB_MAX_ALLOWED_BUILT_AGE=720h'
         }
       }
       steps {
