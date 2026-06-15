@@ -23,7 +23,7 @@ en `/opt/devsecops-lab/bin`.
 
 ## Integracion con la plataforma
 
-El ETL se ejecuta en un contenedor efimero de `cipherbit-ingestor`. Jenkins no
+El ETL se ejecuta en un contenedor efimero de `cipherbit-appsec-ingestor`. Jenkins no
 necesita instalar el paquete Python del ingestor ni publicar PostgreSQL.
 
 Credenciales requeridas:
@@ -38,7 +38,7 @@ Propiedades globales recomendadas:
 ```text
 DEVSECOPS_API_BASE_URL=http://127.0.0.1:3000/api/v1
 DEVSECOPS_API_CONTAINER_BASE_URL=http://backend:8000/api/v1
-INGESTOR_IMAGE=cipherbit-ingestor:local
+INGESTOR_IMAGE=cipherbit-appsec-ingestor:local
 DEVSECOPS_DOCKER_NETWORK=cipherbit_ingestion
 ```
 

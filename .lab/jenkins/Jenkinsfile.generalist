@@ -33,7 +33,7 @@ pipeline {
     EXECUTION_TYPE = 'ci_pipeline'
     // Constantes de plataforma (no son decisiones por ejecución, no se exponen en la UI):
     AGENT_IMAGE = 'devsecops-agente:1.0'
-    INGESTOR_IMAGE = "${env.INGESTOR_IMAGE ?: 'cipherbit-ingestor:local'}"
+    INGESTOR_IMAGE = "${env.INGESTOR_IMAGE ?: 'cipherbit-appsec-ingestor:local'}"
     DEVSECOPS_DOCKER_NETWORK = "${env.DEVSECOPS_DOCKER_NETWORK ?: 'cipherbit_ingestion'}"
     DEVSECOPS_DB_HOST = 'postgres'
     DEVSECOPS_DB_PORT = '5432'
