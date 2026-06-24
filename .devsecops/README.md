@@ -1,28 +1,10 @@
-# DevSecOps project contract
+# DevSecOps project integration
 
-The generic Jenkinsfiles under `.lab/jenkins/*generalist*` read this directory
-as the project-specific contract.
+The project-specific metadata and build, CodeQL, Coverity, fuzzing and firmware
+packaging commands are defined directly in
+`.lab/jenkins/Jenkinsfile.generalist`. The pipeline no longer loads a runtime
+contract from this directory.
 
-For a new C/C++ embedded project, keep the Jenkinsfile stable and adapt:
-
-- `project.env`: project metadata, main artifact, optional tool paths.
-- `project.sh`: the single project adapter invoked by Jenkins.
-
-Supported actions:
-
-- `build`
-- `codeql-configure`
-- `codeql-build`
-- `coverity-configure`
-- `coverity-build`
-- `fuzzing`
-- `package-firmware`
-
-The platform owns orchestration, persistence, monitoring, ingestion and
-notifications. This directory only describes how this repository builds and
-produces project-specific evidence.
-
-The Jenkinsfile treats `.lab/sca/manual-manifest.cdx.json` as a project input
-because Mosquitto has curated vendored dependency evidence. Other projects can
-point `MANUAL_MANIFEST_PATH` to their own manifest, or set
-`MANUAL_MANIFEST_REQUIRED=false`.
+The platform continues to own orchestration, persistence, monitoring,
+ingestion and notifications. Project inputs such as a curated manual component
+manifest remain under `.lab` and are consumed by the relevant pipeline stage.

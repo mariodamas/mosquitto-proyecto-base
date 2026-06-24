@@ -156,7 +156,10 @@ DEVSECOPS_API_BASE_URL="${DEVSECOPS_API_CONTAINER_BASE_URL}" \
       agent any
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-          withCredentials([file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE')]) {
+          withCredentials([
+            file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE'),
+            file(credentialsId: 'devsecops-secret-fingerprint-key', variable: 'DEVSECOPS_SECRET_FINGERPRINT_KEY_FILE')
+          ]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
 bash "${PLATFORM_DIR}/scripts/integration/run-devsecops-ingest-container.sh" --mode monitoring

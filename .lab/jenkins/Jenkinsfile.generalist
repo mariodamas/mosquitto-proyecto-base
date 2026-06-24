@@ -39,8 +39,37 @@ pipeline {
     DEVSECOPS_DB_PORT = '5432'
     DEVSECOPS_DB_NAME = 'cipherbit'
     DEVSECOPS_DB_USER = 'cipherbit_ingestor'
-    PROJECT_CONFIG = '.devsecops/project.env'
-    PROJECT_SCRIPT = '.devsecops/project.sh'
+    // Contrato del proyecto integrado: este Jenkinsfile es autocontenido.
+    PROJECT_NAME = 'mosquitto'
+    PROJECT_DB_NAME = 'mosquitto-proyecto-base'
+    PROJECT_REPO_URL = 'https://github.com/mariodamas/mosquitto-proyecto-base'
+    PROJECT_LANGUAGE = 'C/C++'
+    PROJECT_PLATFORM_TYPE = 'linux_embedded'
+    BUILD_ARTIFACT = 'build/src/mosquitto'
+    HARDENING_ARTIFACT = 'build/src/mosquitto'
+    BUILD_TYPE = 'Release'
+    CC = 'clang'
+    CXX = 'clang++'
+    CODEQL_LANGUAGE = 'cpp'
+    CODEQL_QUERY_PACK = 'cpp-queries'
+    CODEQL_SUITE_GLOB = 'cpp-security-and-quality.qls'
+    COVERITY_COMPILER = 'clang'
+    COVERITY_COMPTYPE = 'clangcc'
+    COVERITY_CERT_CONFIG = '/opt/coverity/config/coding-standards/cert-c/cert-c-all.config'
+    COVERITY_MISRA_CONFIG = '/opt/coverity/config/coding-standards/misrac2012/misrac2012-all.config'
+    MANUAL_MANIFEST_REQUIRED = 'false'
+    MANUAL_MANIFEST_PATH = ''
+    MANUAL_MANIFEST_EVIDENCE_PATH = ''
+    MANUAL_MANIFEST_VALIDATOR = ''
+    FUZZING_PERSISTENT_CORPUS_NAME = 'mosquitto'
+    FIRMWARE_TARGET_NAME = 'mosquitto-rootfs.tar.gz'
+    FIRMWARE_BINARY_INSTALL_PATH = 'usr/sbin/mosquitto'
+    FIRMWARE_VERSION = '2.0.18'
+    FIRMWARE_OS_NAME = 'Mosquitto DevSecOps Lab Firmware'
+    FIRMWARE_OS_ID = 'mosquitto-devsecops-lab'
+    FIRMWARE_CLIENT_ARTIFACTS = 'build/client/mosquitto_pub:usr/bin/mosquitto_pub build/client/mosquitto_sub:usr/bin/mosquitto_sub'
+    FIRMWARE_PACKAGE_STATUS_PACKAGES = 'libc6 libssl3 libssl-dev openssl zlib1g libwebsockets17'
+    FIRMWARE_INIT_COMMAND = '/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf'
     // Endpoint de la plataforma: se define una vez como variable global de Jenkins
     // (Manage Jenkins > System > Global properties) y se reutiliza en todos los
     // proyectos. El fallback cubre ejecución local sin esa propiedad configurada.
@@ -59,14 +88,8 @@ set -euo pipefail
 rm -rf results build build-* build-coverity build-rootfs coverity-config .codeql-cache .cache .codeql-home .lab/fuzzing/findings || true
 mkdir -p results/sast results/compliance results/sca results/fuzzing results/emba results/firmware results/hardening results/build results/metadata
 
-test -f "${PROJECT_CONFIG:-.devsecops/project.env}"
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
-
 : "${PROJECT_NAME:?PROJECT_NAME is required}"
 : "${BUILD_ARTIFACT:?BUILD_ARTIFACT is required}"
-test -f "${PROJECT_SCRIPT}"
 
 echo "Project: ${PROJECT_NAME}"
 echo "Build artifact: ${BUILD_ARTIFACT}"
@@ -85,11 +108,18 @@ echo "Build artifact: ${BUILD_ARTIFACT}"
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
-bash "${PROJECT_SCRIPT}" build
+JOBS="${JOBS:-$(nproc)}"
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+  -DCMAKE_C_COMPILER="${CC}" \
+  -DCMAKE_CXX_COMPILER="${CXX}" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
+cmake --build build --clean-first -j"${JOBS}"
 test -e "${BUILD_ARTIFACT}"
 cp -a "${BUILD_ARTIFACT}" results/build/
 '''
@@ -151,20 +181,26 @@ python3 -m json.tool results/sast/gitleaks.json >/dev/null
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
 export HOME="${WORKSPACE}/.codeql-home"
+JOBS="${JOBS:-$(nproc)}"
 mkdir -p "${HOME}/.codeql"
-rm -rf build/codeql-db
+rm -rf build/codeql-db build-codeql
 
-bash "${PROJECT_SCRIPT}" codeql-configure
+cmake -S . -B build-codeql \
+  -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+  -DCMAKE_C_COMPILER="${CC}" \
+  -DCMAKE_CXX_COMPILER="${CXX}" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
 
 /opt/codeql/codeql/codeql database create build/codeql-db \
-  --language="${CODEQL_LANGUAGE:-cpp}" \
+  --language="${CODEQL_LANGUAGE}" \
   --source-root=. \
-  --command="bash ${PROJECT_SCRIPT} codeql-build"
+  --command="cmake --build build-codeql --clean-first -j${JOBS}"
 
 if [ -n "${CODEQL_SUITE:-}" ]; then
   SUITE="${CODEQL_SUITE}"
@@ -196,11 +232,9 @@ python3 -m json.tool results/sast/codeql.sarif >/dev/null
         withCredentials([file(credentialsId: 'coverity-license', variable: 'COV_LICENSE')]) {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
 test -r "${COV_LICENSE}"
+JOBS="${JOBS:-$(nproc)}"
 
 rm -rf build-coverity coverity-config
 mkdir -p coverity-config results/sast results/compliance
@@ -211,13 +245,21 @@ mkdir -p coverity-config results/sast results/compliance
   --compiler "${COVERITY_COMPILER:-clang}" \
   --comptype "${COVERITY_COMPTYPE:-clangcc}"
 
-bash "${PROJECT_SCRIPT}" coverity-configure
+cmake -S . -B build-coverity \
+  -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+  -DCMAKE_C_COMPILER="${CC}" \
+  -DCMAKE_CXX_COMPILER="${CXX}" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
 
 /opt/coverity/bin/cov-build \
   --config coverity-config/coverity_config.xml \
   --dir build-coverity/cov-int-base \
   --emit-complementary-info \
-  bash "${PROJECT_SCRIPT}" coverity-build
+  cmake --build build-coverity --clean-first -j"${JOBS}"
 
 test -d build-coverity/cov-int-base
 
@@ -285,9 +327,6 @@ fi
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
 mkdir -p "${WORKSPACE}/.cache" results/sca
 export XDG_CACHE_HOME="${WORKSPACE}/.cache"
@@ -411,11 +450,100 @@ fi
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
-bash "${PROJECT_SCRIPT}" fuzzing
+campaign_time="${FUZZING_CAMPAIGN_TIME:-300}"
+allow_failures="${ALLOW_FUZZING_FAILURES:-true}"
+corpus_name="${FUZZING_PERSISTENT_CORPUS_NAME:-${PROJECT_NAME}}"
+
+if ! [[ "${campaign_time}" =~ ^[0-9]+$ ]] || [ "${campaign_time}" -lt 1 ]; then
+  echo "ERROR: FUZZING_CAMPAIGN_TIME must be a positive integer number of seconds" >&2
+  exit 1
+fi
+
+test -d .lab/fuzzing
+export ALLOW_FUZZING_FAILURES="${allow_failures}"
+
+JOBS="${JOBS:-$(nproc)}"
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
+  -DCMAKE_C_COMPILER="${CC}" \
+  -DCMAKE_CXX_COMPILER="${CXX}" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DDOCUMENTATION=OFF \
+  -DCMAKE_C_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_CXX_FLAGS_RELEASE="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE" \
+  -DCMAKE_EXE_LINKER_FLAGS="-pie -Wl,-z,relro,-z,now"
+cmake --build build --clean-first -j"${JOBS}"
+rm -rf .lab/fuzzing/findings
+
+(
+  cd .lab/fuzzing
+  python3 corpus/generate_corpus.py
+  bash ./build_libfuzzer.sh
+
+  FUZZING_PERSISTENT_CORPUS_DIR="/opt/devsecops-lab/fuzzing-corpus/${corpus_name}" \
+  ALLOW_FUZZING_FAILURES="${allow_failures}" \
+  CAMPAIGN_TIME="${campaign_time}" \
+  bash ./run_campaigns.sh libfuzzer
+)
+
+mkdir -p results/fuzzing
+if [ -d .lab/fuzzing/findings ]; then
+  cp -a .lab/fuzzing/findings/. results/fuzzing/
+fi
+
+if [ -d .lab/fuzzing/build ]; then
+  mkdir -p results/fuzzing/build
+  cp -a .lab/fuzzing/build/. results/fuzzing/build/
+fi
+
+python3 - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+allow_failures = os.environ.get("ALLOW_FUZZING_FAILURES", "true").lower() == "true"
+root = Path("results/fuzzing/libfuzzer")
+
+if not root.exists():
+    print("[WARN] No libFuzzer results were produced")
+    sys.exit(0)
+
+infra_errors = []
+harness_failures = []
+
+for harness_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+    name = harness_dir.name
+    log = harness_dir / "run.log"
+    exit_code = harness_dir / "exit_code.txt"
+    metadata = harness_dir / "metadata.txt"
+    corpus = harness_dir / "corpus"
+
+    if not log.is_file() or log.stat().st_size == 0:
+        infra_errors.append(f"{name}: run.log missing or empty")
+    if not exit_code.is_file():
+        infra_errors.append(f"{name}: exit_code.txt missing")
+    if not metadata.is_file():
+        infra_errors.append(f"{name}: metadata.txt missing")
+    if not corpus.is_dir() or not any(corpus.iterdir()):
+        infra_errors.append(f"{name}: corpus missing or empty")
+
+    if exit_code.is_file():
+        code = exit_code.read_text(encoding="utf-8", errors="replace").strip()
+        print(f"[OK] {name}: exit_code={code} log={log.stat().st_size if log.exists() else 0}B")
+        if code != "0":
+            harness_failures.append(f"{name}: exit_code={code}")
+
+if infra_errors:
+    for error in infra_errors:
+        print(f"[FAIL] {error}", file=sys.stderr)
+    sys.exit(1)
+
+if harness_failures and not allow_failures:
+    for failure in harness_failures:
+        print(f"[FAIL] {failure}", file=sys.stderr)
+    sys.exit(1)
+PY
 '''
       }
     }
@@ -432,11 +560,141 @@ bash "${PROJECT_SCRIPT}" fuzzing
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
-bash "${PROJECT_SCRIPT}" package-firmware
+build_artifact="${BUILD_ARTIFACT:?BUILD_ARTIFACT is required}"
+target_name="${FIRMWARE_TARGET_NAME:-${PROJECT_NAME}-rootfs.tar.gz}"
+binary_install_path="${FIRMWARE_BINARY_INSTALL_PATH:-usr/bin/$(basename "${build_artifact}")}"
+firmware_version="${FIRMWARE_VERSION:-unknown}"
+firmware_os_name="${FIRMWARE_OS_NAME:-${PROJECT_NAME} DevSecOps Lab Firmware}"
+firmware_os_id="${FIRMWARE_OS_ID:-${PROJECT_NAME}-devsecops-lab}"
+rootfs="${WORKSPACE:-$(pwd)}/build-rootfs/rootfs"
+
+rm -rf "${rootfs}"
+mkdir -p "${rootfs}" results/firmware
+
+install_file() {
+  local src="$1"
+  local dst_rel="$2"
+  [ -e "${src}" ] || return 0
+  mkdir -p "${rootfs}/$(dirname "${dst_rel}")"
+  cp -a "${src}" "${rootfs}/${dst_rel}"
+}
+
+test -e "${build_artifact}"
+install_file "${build_artifact}" "${binary_install_path}"
+
+for item in ${FIRMWARE_CLIENT_ARTIFACTS:-}; do
+  install_file "${item%%:*}" "${item#*:}"
+done
+
+mkdir -p \
+  "${rootfs}/etc/init.d" \
+  "${rootfs}/etc/mosquitto" \
+  "${rootfs}/tmp" \
+  "${rootfs}/var/lib/mosquitto" \
+  "${rootfs}/var/log"
+
+cat > "${rootfs}/etc/os-release" <<EOF
+NAME="${firmware_os_name}"
+ID=${firmware_os_id}
+VERSION_ID="${firmware_version}"
+PRETTY_NAME="${firmware_os_name} ${firmware_version}"
+EOF
+
+cat > "${rootfs}/etc/mosquitto/mosquitto.conf" <<'EOF'
+pid_file /tmp/mosquitto.pid
+persistence true
+persistence_location /var/lib/mosquitto/
+log_dest file /var/log/mosquitto.log
+listener 1883
+allow_anonymous true
+EOF
+
+if [ -n "${FIRMWARE_INIT_COMMAND:-}" ]; then
+  cat > "${rootfs}/etc/init.d/S50${PROJECT_NAME}" <<EOF
+#!/bin/sh
+case "\$1" in
+  start)
+    ${FIRMWARE_INIT_COMMAND}
+    ;;
+  stop)
+    killall ${PROJECT_NAME} || true
+    ;;
+  *)
+    echo "Usage: \$0 {start|stop}"
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "${rootfs}/etc/init.d/S50${PROJECT_NAME}"
+fi
+
+if command -v ldd >/dev/null 2>&1 && [ -x "${build_artifact}" ]; then
+  ldd "${build_artifact}" | tee "results/firmware/${PROJECT_NAME}-ldd.txt" || true
+
+  ROOTFS="${rootfs}" BUILD_ARTIFACT="${build_artifact}" python3 - <<'PY'
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+rootfs = Path(os.environ["ROOTFS"])
+binary = Path(os.environ["BUILD_ARTIFACT"])
+manifest = Path("results/firmware/rootfs-copied-libraries.txt")
+
+try:
+    output = subprocess.check_output(["ldd", str(binary)], text=True, stderr=subprocess.STDOUT)
+except Exception as exc:
+    manifest.write_text(f"ldd failed: {exc}\\n", encoding="utf-8")
+    raise SystemExit(0)
+
+paths = set()
+for line in output.splitlines():
+    for match in re.findall(r"(/[^\\s]+)", line):
+        candidate = Path(match)
+        if candidate.exists():
+            paths.add(candidate)
+
+copied = []
+for src in sorted(paths):
+    dst = rootfs / src.relative_to("/")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(src, dst)
+        copied.append(f"{src} -> {dst.relative_to(rootfs)}")
+    except Exception as exc:
+        copied.append(f"{src} -> COPY_FAILED: {exc}")
+
+manifest.write_text("\\n".join(copied) + "\\n", encoding="utf-8")
+print(f"[OK] copied {len(copied)} dynamic library entries")
+PY
+fi
+
+mkdir -p "${rootfs}/var/lib/dpkg"
+if command -v dpkg-query >/dev/null 2>&1 && [ -n "${FIRMWARE_PACKAGE_STATUS_PACKAGES:-}" ]; then
+  # shellcheck disable=SC2086
+  dpkg-query -W -f='Package: ${binary:Package}\\nVersion: ${Version}\\nArchitecture: ${Architecture}\\nStatus: install ok installed\\n\\n' \
+    ${FIRMWARE_PACKAGE_STATUS_PACKAGES} > "${rootfs}/var/lib/dpkg/status" 2>/dev/null || true
+fi
+
+if [ ! -s "${rootfs}/var/lib/dpkg/status" ]; then
+  cat > "${rootfs}/var/lib/dpkg/status" <<EOF
+Package: ${PROJECT_NAME}-devsecops-lab
+Version: ${firmware_version}
+Architecture: amd64
+Status: install ok installed
+Description: Synthetic package metadata for DevSecOps lab firmware.
+EOF
+fi
+
+find "${rootfs}" -maxdepth 5 -type f | sort > results/firmware/rootfs-file-list.txt
+
+firmware_target="results/firmware/${target_name}"
+tar -C "${rootfs}" -czf "${firmware_target}" .
+test -s "${firmware_target}"
+printf '%s\\n' "${firmware_target}" > results/firmware/firmware-target.txt
+echo "[OK] firmware package: ${firmware_target}"
 '''
       }
     }
@@ -448,9 +706,6 @@ bash "${PROJECT_SCRIPT}" package-firmware
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
 mkdir -p results/emba
 rm -rf results/emba/*
@@ -511,9 +766,6 @@ exit 0
       steps {
           sh '''#!/usr/bin/env bash
 set -euo pipefail
-set -a
-source "${PROJECT_CONFIG:-.devsecops/project.env}"
-set +a
 
 ARTIFACT="${HARDENING_ARTIFACT:-${BUILD_ARTIFACT}}"
 test -e "${ARTIFACT}"
@@ -539,7 +791,10 @@ bash "${PLATFORM_DIR}/scripts/ci/persist-devsecops-artifacts.sh"
       agent any
       steps {
         catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
-          withCredentials([file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE')]) {
+          withCredentials([
+            file(credentialsId: 'devsecops-ingestor-db-password', variable: 'DEVSECOPS_DB_PASSWORD_FILE'),
+            file(credentialsId: 'devsecops-secret-fingerprint-key', variable: 'DEVSECOPS_SECRET_FINGERPRINT_KEY_FILE')
+          ]) {
             sh '''#!/usr/bin/env bash
 set -euo pipefail
 bash "${PLATFORM_DIR}/scripts/integration/run-devsecops-ingest-container.sh"
