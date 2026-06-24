@@ -613,7 +613,7 @@ EOF
 if [ -n "${FIRMWARE_INIT_COMMAND:-}" ]; then
   cat > "${rootfs}/etc/init.d/S50${PROJECT_NAME}" <<EOF
 #!/bin/sh
-case "\$1" in
+case "\\$1" in
   start)
     ${FIRMWARE_INIT_COMMAND}
     ;;
@@ -621,7 +621,7 @@ case "\$1" in
     killall ${PROJECT_NAME} || true
     ;;
   *)
-    echo "Usage: \$0 {start|stop}"
+    echo "Usage: \\$0 {start|stop}"
     exit 1
     ;;
 esac
