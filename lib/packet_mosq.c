@@ -260,6 +260,7 @@ int packet__write(struct mosquitto *mosq)
 		packet = mosq->current_out_packet;
 
 		while(packet->to_process > 0){
+			
 			write_length = net__write(mosq, &(packet->payload[packet->pos]), packet->to_process);
 			if(write_length > 0){
 				G_BYTES_SENT_INC(write_length);
